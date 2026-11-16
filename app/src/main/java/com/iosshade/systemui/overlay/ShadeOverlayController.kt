@@ -500,14 +500,12 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             // Samsung's shade-header clock (QSClockHeaderView + its pop-over): part
             // of the shade chrome. Deliberately NOT matching plain TextClock.
             if (name.contains("QSClock")) return true
-            // lock_clock_blur is ONLY the blurred lock-wallpaper backdrop; the
-            // real clock lives in the sibling SecKeyguardStatusView. Pin the
-            // blur layer so it can't frost our sharp wallpaper.
-            if (name.contains("SecKeyguardClockContainer")) return true
+            // The lock-clock layer (lock_clock_blur / SecKeyguardStatusView /
+            // SecKeyguardClockContainer) is NOT pinned - the ORIGINAL Samsung
+            // clock is revealed & recolored by our overlay instead (see below).
             if (view.id != View.NO_ID) {
                 val id = view.resources.getResourceEntryName(view.id)
                 if (id == "notification_stack_scroller" || id == "notification_footer") return true
-                if (id == "lock_clock_blur") return true
             }
         } catch (_: Throwable) {
         }
@@ -630,13 +628,9 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 if (v.visibility != View.VISIBLE) v.visibility = View.VISIBLE
                 if (v.alpha < 1f) v.alpha = 1f
             }
-            // One-shot structural dump so we can see which clock child One UI
-            // keeps hidden (calibration; removed in the next release).
-            if (!clockTreeDumped) {
-                clockTreeDumped = true
-                dumpClockTree(layer, 0)
-            }
-            Log.i("Original Samsung clock revealed inside the panel")
+            // Hand the clock layer to the view so ALL its motion comes from the
+            // single authoritative expansion (no hard-coded one-shot lift).
+            overlayRef?.get()?.setClockLayer(layer)
         } catch (t: Throwable) {
             Log.e("revealClockLayer failed", t)
         }
@@ -653,10 +647,6 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                     )
                 )
                 view.alpha = 1f
-                // Lift the clock a bit higher, as requested (top layer only).
-                if (view.javaClass.name.contains("SecKeyguardStatusView")) {
-                    view.translationY = view.translationY - 60f * view.resources.displayMetrics.density
-                }
                 try {
                     view.background = null // plain wallpaper, no blur backdrop
                     view.setRenderEffect(null)
@@ -671,6 +661,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     }
 
     private fun restoreClockLayers() {
+        overlayRef?.get()?.setClockLayer(null)
         val moved = movedClockLayer
         movedClockLayer = null
         if (moved != null) {

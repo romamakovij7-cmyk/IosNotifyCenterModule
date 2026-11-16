@@ -14,7 +14,6 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
 import android.view.animation.AccelerateInterpolator
-import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -50,6 +49,26 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     private var blurredWallpaper: android.graphics.Bitmap? = null
     private var torchButton: FrameLayout? = null
     private var torchOn = false
+    private var lockButtonsRow: View? = null
+    private var clockLayer: java.lang.ref.WeakReference<View>? = null
+
+    /**
+     * The single authoritative expansion (0..1) and all gesture physics.
+     * Every visual element derives its transform from [applyExpansion].
+     */
+    private val motion: ShadeMotion = ShadeMotion(context, object : ShadeMotion.Host {
+        override fun onExpansionChanged(expansion: Float, velocity: Float, tracking: Boolean) {
+            applyExpansion(expansion, velocity, tracking)
+        }
+
+        override fun onDriveStock(fraction: Float) {
+            com.iosshade.systemui.hooks.PanelExpansionHook.requestSetFraction(fraction)
+        }
+
+        override fun canScrollContentDown(): Boolean = scroll.canScrollVertically(1)
+
+        override fun screenHeight(): Int = resources.displayMetrics.heightPixels
+    })
 
     /**
      * Lock-screen behaviour: collapsed shows ONLY the newest notification;
@@ -65,13 +84,8 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     /** Pending hide safety-net (cancelled whenever the panel is shown again). */
     private var hideSafety: Runnable? = null
 
-    private val showInterpolator = DecelerateInterpolator(2.2f)
     private val springInterpolator = OvershootInterpolator(0.8f)
     private val hideInterpolator = AccelerateInterpolator(1.2f)
-
-    /** True while the user is swipe-closing the panel with a finger down. */
-    private var userDragging = false
-    private var dragStartY = 0f
 
     init {
         clipToPadding = false
@@ -104,59 +118,11 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         scroll.isClickable = true
         scroll.setOnClickListener { closePanel() }
 
-        // Swipe-up-to-close, iOS lock-screen style: the content tracks the finger
-        // 1:1 while pushing up; release far enough and the panel closes, release
-        // early and it springs back. Purely observational (never consumes the
-        // touch), so card taps and list scrolling keep working.
+        // ALL finger tracking goes through ShadeMotion - the single authoritative
+        // expansion value. No view transform is written directly from touch.
         scroll.setOnTouchListener { _, ev ->
             try {
-                when (ev.actionMasked) {
-                    android.view.MotionEvent.ACTION_DOWN -> {
-                        dragStartY = ev.rawY
-                        false
-                    }
-                    android.view.MotionEvent.ACTION_MOVE -> {
-                        val dy = ev.rawY - dragStartY
-                        // Swipe up only, and only when the list itself cannot scroll
-                        // further (so scrolling long lists never fights the close).
-                        if (dy < 0 && !scroll.canScrollVertically(1)) {
-                            userDragging = true
-                            column.translationY = dy * 1f
-                            column.alpha = (1f + dy / dp(420)).coerceIn(0.5f, 1f)
-                            // While pushing the panel up, the edge chases the
-                            // content's bottom - the shade is clearly "ending" there.
-                            edgeView.animate().cancel()
-                            edgeView.alpha = 1f
-                            edgeView.translationY =
-                                (column.bottom + column.translationY).coerceAtLeast(dp(60).toFloat())
-                        } else if (dy > 0) {
-                            userDragging = false
-                        }
-                        false
-                    }
-                    android.view.MotionEvent.ACTION_UP,
-                    android.view.MotionEvent.ACTION_CANCEL -> {
-                        if (userDragging) {
-                            userDragging = false
-                            val dy = ev.rawY - dragStartY
-                            if (dy < -dp(50)) {
-                                closePanel()
-                            } else {
-                                fadeEdgeOut()
-                                column.animate().cancel()
-                                column.animate()
-                                    .translationY(0f)
-                                    .alpha(1f)
-                                    .setDuration(280L)
-                                    .setInterpolator(springInterpolator)
-                                    .withLayer()
-                                    .start()
-                            }
-                        }
-                        false
-                    }
-                    else -> false
-                }
+                motion.onTouch(ev)
             } catch (_: Throwable) {
                 false
             }
@@ -200,26 +166,20 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             edgeView.isFocusable = false
             edgeView.alpha = 0f
 
-            val glass = View(context).apply {
-                background = GradientDrawable().apply {
-                    orientation = GradientDrawable.Orientation.TOP_BOTTOM
-                    cornerRadius = dp(15).toFloat()
-                    colors = if (isNight()) {
-                        intArrayOf(0x8CFFFFFF.toInt(), 0x40FFFFFF)
-                    } else {
-                        intArrayOf(0x99FFFFFF.toInt(), 0x59FFFFFF)
-                    }
-                    setStroke(dp(1), 0x8CFFFFFF.toInt())
-                }
+            // A crisp white home-indicator line marking the end of the shade,
+            // exactly like the video. Slight glow so it reads on any wallpaper.
+            edgeView.removeAllViews()
+            val line = View(context).apply {
+                setBackgroundColor(0xFFFFFFFF.toInt())
+                alpha = 0.92f
             }
             edgeView.addView(
-                glass,
-                LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+                line,
+                LayoutParams(LayoutParams.MATCH_PARENT, dp(4))
             )
 
-            val lp = LayoutParams(LayoutParams.MATCH_PARENT, dp(30))
-            lp.leftMargin = dp(56)
-            lp.rightMargin = dp(56)
+            val lp = LayoutParams(dp(160), dp(4))
+            lp.leftMargin = (resources.displayMetrics.widthPixels - dp(160)) / 2
             addView(edgeView, lp)
         } catch (t: Throwable) {
             Log.e("buildEdge failed", t)
@@ -351,6 +311,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
                     .apply { bottomMargin = dp(34) }
             )
+            lockButtonsRow = row
         } catch (t: Throwable) {
             Log.e("buildLockButtons failed", t)
         }
@@ -523,7 +484,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             hideSafety = null
             animate().cancel()
             column.animate().cancel()
-            userDragging = false
+            motion.cancelSettling()
             pivotY = 0f
             refreshWallpaper()
             edgeView.animate().cancel()
@@ -560,7 +521,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                     // the next open starts clean: sheet up, newest-notification-only.
                     column.translationY = 0f
                     column.alpha = 1f
-                    userDragging = false
+                    motion.snapTo(0f)
                     expanded = false
                     edgeView.animate().cancel()
                     edgeView.alpha = 0f
@@ -617,37 +578,89 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     }
 
     /**
-     * The signature iOS move: while the panel is pulled down the cards
-     * physically FOLLOW THE FINGER (slide in from behind the status bar,
-     * fading up). The background is the revealed ORIGINAL lock screen.
-     *
-     * The shade edge rides the bottom of the shade region (fraction x height)
-     * and shows ONLY while the shade is moving: gone when fully open, gone
-     * when fully closed, crisp during the gesture.
+     * Feed the stock panel's expansion into [motion]. When our own gesture is
+     * driving, motion ignores these (it is authoritative); otherwise it mirrors
+     * Samsung so a pull started on the status bar still opens our panel.
      */
     fun setPanelState(fraction: Float, onKeyguard: Boolean) {
+        motion.onExternalFraction(fraction)
+    }
+
+    /**
+     * The ONLY place that writes transforms. Every element derives from the one
+     * authoritative [expansion], so finger tracking, fling settle and stock
+     * mirroring all look identical - no competing animation systems.
+     */
+    private fun applyExpansion(expansion: Float, velocity: Float, tracking: Boolean) {
         try {
-            val f = fraction.coerceIn(0f, 1f)
-            val t = ((f - 0.04f) / 0.96f).coerceIn(0f, 1f)
-            if (!userDragging) {
-                column.translationY = -(1f - t) * dp(150)
-                column.alpha = 0.3f + 0.7f * t
-            }
-            // Edge: position at the bottom of the shade region...
             val h = if (height > 0) height else resources.displayMetrics.heightPixels
-            edgeView.translationY = (f * h - edgeView.height).coerceAtLeast(0f)
-            // ...and visible only mid-gesture (opening or closing).
-            val moving = f >= 0.05f && f <= 0.965f
+
+            // THE WHOLE SHEET FOLLOWS THE FINGER. At expansion 0 the content
+            // sits one screen ABOVE; at 1 it is in place. This is the iOS move:
+            // the entire lock-screen sheet slides in from the top with the drag.
+            val sheetY = -(1f - expansion) * h
+            wallpaper.translationY = sheetY
+            scroll.translationY = sheetY
+            lockButtonsRow?.translationY = sheetY
+            // Clock follows the sheet AND sits ~42dp higher than the cards, so
+            // the depth-effect clock clears the notification card below it.
+            clockLayer?.get()?.let { it.translationY = sheetY - dp(42) }
+
+            // Cards: extra small stagger inside the moving sheet.
+            column.translationY = -(1f - expansion) * dp(60)
+            column.alpha = 0.55f + 0.45f * expansion
+
+            // Clock scaling: grows subtly as the sheet settles (iOS proportions).
+            clockLayer?.get()?.let { clock ->
+                clock.pivotX = clock.width / 2f
+                clock.pivotY = clock.height * 0.28f
+                val scale = 0.92f + 0.08f * expansion
+                clock.scaleX = scale
+                clock.scaleY = scale
+            }
+
+            // White end-line rides the BOTTOM of the moving sheet, visible while
+            // opening/closing (the video shows it during the gesture).
+            edgeView.translationY = (expansion * h - edgeView.height).coerceAtLeast(0f)
+            val moving = (tracking || motion.isAnimating) &&
+                expansion >= 0.03f && expansion <= 0.98f
             if (moving) {
-                if (edgeView.alpha < 1f) {
-                    edgeView.animate().cancel()
-                    edgeView.alpha = 1f
-                }
+                edgeView.animate().cancel()
+                if (edgeView.alpha < 1f) edgeView.alpha = 1f
             } else if (edgeView.alpha > 0f) {
                 fadeEdgeOut()
             }
         } catch (_: Throwable) {
         }
+    }
+
+    private val recolorClockTick = object : Runnable {
+        override fun run() {
+            val c = clockLayer?.get()
+            if (c == null) return
+            // NO recoloring: the user has Samsung's "depth effect" enabled,
+            // which draws the clock THROUGH the wallpaper subject. Our repaint
+            // would break it - we only keep the layer visible & positioned.
+            mainHandler.postDelayed(this, 90)
+        }
+    }
+
+    /** Keeps Samsung's clock untouched (its own depth effect must work). */
+    private fun paintClockWhite(view: View?) {
+        if (view == null) return
+        mainHandler.removeCallbacks(recolorClockTick)
+        mainHandler.postDelayed(recolorClockTick, 90)
+    }
+
+    /** Called by the controller when it reparents Samsung's clock layer in/out. */
+    fun setClockLayer(view: View?) {
+        if (view == null) {
+            mainHandler.removeCallbacks(recolorClockTick)
+        }
+        clockLayer = view?.let { java.lang.ref.WeakReference(it) }
+        paintClockWhite(view)
+        // Apply the current transform immediately so it never pops in at scale 1.
+        applyExpansion(motion.expansion, motion.velocity, motion.isTracking)
     }
 
     /** Smoothly fades the shade edge out (used when the panel settles). */

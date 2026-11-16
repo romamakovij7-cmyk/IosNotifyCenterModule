@@ -84,23 +84,39 @@ class PanelExpansionHook(private val lpparam: LoadPackageParam) {
          */
         @JvmStatic
         fun requestCollapse() {
+            requestSetFraction(0f)
+            // ALSO try the explicit collapse methods: on some One UI builds the
+            // fraction setter is ignored and only these actually collapse.
+            try {
+                val refs = synchronized(panelRefs) { panelRefs.toList() }
+                for (ref in refs) {
+                    val panel = ref.get() ?: continue
+                    SafeXposed.invokeByName(panel, "collapsePanel", arrayOf(false))
+                }
+            } catch (t: Throwable) {
+                Log.e("requestCollapse extra failed", t)
+            }
+        }
+
+        /**
+         * Drive the stock panel to an exact fraction. Used by ShadeMotion so
+         * there is ONE authoritative expansion value: while our finger moves
+         * the overlay, Samsung's panel is moved with it instead of fighting it.
+         */
+        @JvmStatic
+        fun requestSetFraction(fraction: Float) {
             try {
                 val refs = synchronized(panelRefs) { panelRefs.toList() }
                 var invoked = false
                 for (ref in refs) {
                     val panel = ref.get() ?: continue
-                    if (SafeXposed.invokeByName(panel, "setExpandedFraction", arrayOf(0f)) ||
-                        SafeXposed.invokeByName(panel, "collapsePanel", arrayOf(false)) ||
-                        SafeXposed.invokeByName(panel, "collapsePanels", arrayOf<Any?>()) ||
-                        SafeXposed.invokeByName(panel, "animateCollapsePanels", arrayOf<Any?>()) ||
-                        SafeXposed.invokeByName(panel, "instantCollapse", arrayOf<Any?>())
-                    ) {
-                        invoked = true
-                    }
+                    invoked = SafeXposed.invokeByName(
+                        panel, "setExpandedFraction", arrayOf(fraction.coerceIn(0f, 1f))
+                    ) || invoked
                 }
-                Log.i("requestCollapse(): invoked=$invoked (live panels=${refs.size})")
+                if (!invoked) Log.w("requestSetFraction: no panel method invoked")
             } catch (t: Throwable) {
-                Log.e("requestCollapse failed", t)
+                Log.e("requestSetFraction failed", t)
             }
         }
     }
