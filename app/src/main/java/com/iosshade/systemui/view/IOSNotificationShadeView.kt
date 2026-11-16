@@ -121,8 +121,8 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                         // further (so scrolling long lists never fights the close).
                         if (dy < 0 && !scroll.canScrollVertically(1)) {
                             userDragging = true
-                            column.translationY = dy * 0.85f
-                            column.alpha = (1f + dy / dp(300)).coerceIn(0.25f, 1f)
+                            column.translationY = dy * 1f
+                            column.alpha = (1f + dy / dp(420)).coerceIn(0.5f, 1f)
                             // While pushing the panel up, the edge chases the
                             // content's bottom - the shade is clearly "ending" there.
                             edgeView.animate().cancel()
@@ -139,7 +139,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                         if (userDragging) {
                             userDragging = false
                             val dy = ev.rawY - dragStartY
-                            if (dy < -dp(80)) {
+                            if (dy < -dp(50)) {
                                 closePanel()
                             } else {
                                 fadeEdgeOut()
@@ -529,16 +529,16 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             edgeView.animate().cancel()
             edgeView.alpha = 0f
             alpha = 0f
-            translationY = dp(-48).toFloat()
-            scaleX = 0.985f
-            scaleY = 0.985f
+            translationY = dp(-24).toFloat()
+            scaleX = 1f
+            scaleY = 1f
             visibility = VISIBLE
             animate()
                 .alpha(1f)
                 .translationY(0f)
                 .scaleX(1f)
                 .scaleY(1f)
-                .setDuration(400L)
+                .setDuration(180L)
                 .setInterpolator(showInterpolator)
                 .withLayer()
                 .start()

@@ -3,6 +3,7 @@ package com.iosshade.systemui.hooks
 import android.view.MotionEvent
 import com.iosshade.systemui.core.Log
 import com.iosshade.systemui.core.ShadeEventBus
+import com.iosshade.systemui.overlay.ShadeOverlayController
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XC_MethodHook.MethodHookParam
 import de.robv.android.xposed.XposedHelpers
@@ -23,9 +24,9 @@ class ControlCenterGuardHook(private val lpparam: LoadPackageParam) {
 
     fun install() {
         val candidates = listOf(
-            "com.android.systemui.statusbar.phone.NotificationShadeWindowView",
             "com.android.systemui.shade.NotificationShadeWindowView",
-            "com.android.systemui.statusbar.phone.StatusBarView"
+            "com.android.systemui.statusbar.window.StatusBarWindowView",
+            "com.android.systemui.statusbar.phone.StatusBarWindowView"
         )
         var armed = false
         for (name in candidates) {
@@ -44,17 +45,19 @@ class ControlCenterGuardHook(private val lpparam: LoadPackageParam) {
                                 if (width <= 0) return
                                 when (ev.actionMasked) {
                                     MotionEvent.ACTION_DOWN -> {
-                                        // Only a pull that STARTS in the status-bar strip
-                                        // counts. Taps on notification cards (lower down)
-                                        // must not poison the next notification pull.
-                                        val top = (48 * view.resources.displayMetrics.density).toInt()
-                                        if (ev.rawY > top) return
-                                        // Right ~40% of the screen = Control Center gesture.
+                                        // Right side = Control Center gesture. Reset on
+                                        // EVERY down, so a stale flag can never leak into
+                                        // the next notification pull.
                                         ShadeEventBus.controlCenterGesture = ev.rawX >= width * 0.6f
+                                        // Immediately drop our panel if it is showing,
+                                        // before any expansion event arrives.
+                                        if (ShadeEventBus.controlCenterGesture &&
+                                            ShadeEventBus.lastFraction < 0.1f
+                                        ) {
+                                            ShadeOverlayController.forceHide()
+                                        }
                                     }
                                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                                        // A gesture that never opened anything must not
-                                        // leave the guard latched for the next pull.
                                         if (ShadeEventBus.lastFraction < 0.1f) {
                                             ShadeEventBus.controlCenterGesture = false
                                         }
