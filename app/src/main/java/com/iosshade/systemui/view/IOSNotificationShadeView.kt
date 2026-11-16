@@ -528,20 +528,13 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             refreshWallpaper()
             edgeView.animate().cancel()
             edgeView.alpha = 0f
-            alpha = 0f
-            translationY = dp(-24).toFloat()
+            // The CLOCK must stay put (static, like the real lock screen).
+            // Only the notification cards animate in (see render/playCardEntrance).
+            alpha = 1f
+            translationY = 0f
             scaleX = 1f
             scaleY = 1f
             visibility = VISIBLE
-            animate()
-                .alpha(1f)
-                .translationY(0f)
-                .scaleX(1f)
-                .scaleY(1f)
-                .setDuration(180L)
-                .setInterpolator(showInterpolator)
-                .withLayer()
-                .start()
         } catch (t: Throwable) {
             alpha = 1f
             translationY = 0f

@@ -66,6 +66,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
             installGroup("NotificationSourceHook") { NotificationSourceHook(lpparam).install() }
             installGroup("StockShadeSuppressorHook") { StockShadeSuppressorHook(lpparam).install() }
             installGroup("ControlCenterGuardHook") { ControlCenterGuardHook(lpparam).install() }
+            installGroup("ExpandMotionHook") { com.iosshade.systemui.hooks.ExpandMotionHook(lpparam).install() }
             installGroup("ClockForceHook") { ClockForceHook(lpparam).install() }
 
             Log.i("All hook groups installed. Review WARN/ERROR lines above for One UI 9 calibration.")
