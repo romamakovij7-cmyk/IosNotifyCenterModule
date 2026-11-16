@@ -154,7 +154,7 @@ class ShadeMotion(context: Context, private val host: Host) {
             return
         }
         val distance = abs(target - start)
-        val duration = (180L + (distance * 220L)).toLong().coerceIn(180L, 420L)
+        val duration = (110L + (distance * 150L)).toLong().coerceIn(110L, 260L)
         val animator = ValueAnimator.ofFloat(start, target).apply {
             this.duration = duration
             interpolator = SETTLE_INTERPOLATOR
@@ -163,10 +163,26 @@ class ShadeMotion(context: Context, private val host: Host) {
                 setExpansion(f.coerceIn(0f, 1f), 0f, tracking = false)
                 host.onDriveStock(f.coerceIn(0f, 1f))
             }
+            addListener(object : android.animation.Animator.AnimatorListener {
+                override fun onAnimationStart(a: android.animation.Animator) {}
+                override fun onAnimationEnd(a: android.animation.Animator) {
+                    if (settling == a) settling = null
+                    // Snap to the exact target so no rounding gap remains.
+                    setExpansion(target, 0f, tracking = false)
+                    host.onDriveStock(target)
+                }
+                override fun onAnimationCancel(a: android.animation.Animator) {
+                    if (settling == a) settling = null
+                }
+                override fun onAnimationRepeat(a: android.animation.Animator) {}
+            })
         }
         settling = animator
         animator.start()
     }
+
+    /** True while our finger or a settle animation still owns the panel. */
+    fun isMotionActive(): Boolean = isTracking || settling != null
 
     fun cancelSettling() {
         settling?.cancel()

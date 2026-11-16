@@ -463,8 +463,8 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 .translationY(0f)
                 .scaleX(1f)
                 .scaleY(1f)
-                .setStartDelay((50L * index.coerceAtMost(8)))
-                .setDuration(360L)
+                .setStartDelay((32L * index.coerceAtMost(8)))
+                .setDuration(240L)
                 .setInterpolator(springInterpolator)
                 .withLayer()
                 .start()
@@ -476,6 +476,9 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             card.scaleY = 1f
         }
     }
+
+    /** True while finger tracking or a settle animation still owns the panel. */
+    fun isMotionActive(): Boolean = motion.isMotionActive()
 
     /** Cancels any in-flight hide so a fast re-open never snaps back to GONE. */
     fun cancelHideAnimation() {
@@ -544,14 +547,14 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             animate()
                 .alpha(0f)
                 .translationY(dp(-40).toFloat())
-                .setDuration(230L)
+                .setDuration(160L)
                 .setInterpolator(hideInterpolator)
                 .withLayer()
                 .withEndAction { safety.run() }
                 .start()
             // Safety net: if the end action never fires (rare animator edge cases),
             // force the hidden state shortly after. Idempotent via visibility check.
-            mainHandler.postDelayed(safety, 450)
+            mainHandler.postDelayed(safety, 300)
         } catch (t: Throwable) {
             hideSafety = null
             visibility = GONE
@@ -679,7 +682,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     private fun fadeEdgeOut() {
         try {
             edgeView.animate().cancel()
-            edgeView.animate().alpha(0f).setDuration(160L).start()
+            edgeView.animate().alpha(0f).setDuration(100L).start()
         } catch (_: Throwable) {
         }
     }
