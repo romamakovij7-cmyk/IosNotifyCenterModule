@@ -280,7 +280,15 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             }
 
             if (!shown) {
+                // Cancel any in-flight HIDE before re-showing. Otherwise the
+                // hide's end-action can fire mid-open and snap us back to GONE,
+                // briefly exposing the stock Samsung notification panel.
                 hiding = false
+                overlay.cancelHideAnimation()
+                // Hide the stock stack FIRST, before our overlay becomes visible,
+                // so the stock panel never flashes through during the handoff.
+                hideStockStack()
+                killShadeBlur()
                 // Re-assert z-order: SystemUI keeps adding windows (keyguard, bouncer...).
                 rootRef?.get()?.bringChildToFront(overlay)
                 // Lift above every sibling subtree so nothing stock can draw over us.
@@ -289,14 +297,13 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 } catch (_: Throwable) {
                 }
                 overlay.setPanelState(fraction, onKeyguard)
-                hideStockStack()
-                killShadeBlur()
                 revealClockLayer()
                 overlay.isClickable = true
                 overlay.isFocusable = true
                 overlay.animateShow()
-                shown = true
+                mainHandler.removeCallbacks(suppressionTick)
                 startSuppressionTick()
+                shown = true
                 Log.i("Overlay shown (fraction=$fraction, state=$state)")
             }
         } catch (t: Throwable) {

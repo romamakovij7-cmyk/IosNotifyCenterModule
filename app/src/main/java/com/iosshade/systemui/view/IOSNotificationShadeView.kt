@@ -166,19 +166,21 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             edgeView.isFocusable = false
             edgeView.alpha = 0f
 
-            // A crisp white home-indicator line marking the end of the shade,
-            // exactly like the video. Slight glow so it reads on any wallpaper.
+            // A rounded white home-indicator (pill) marking the end of the shade.
             edgeView.removeAllViews()
             val line = View(context).apply {
-                setBackgroundColor(0xFFFFFFFF.toInt())
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(0xFFFFFFFF.toInt())
+                    cornerRadius = dp(3).toFloat() // half the height => pill
+                }
                 alpha = 0.92f
             }
             edgeView.addView(
                 line,
-                LayoutParams(LayoutParams.MATCH_PARENT, dp(4))
+                LayoutParams(LayoutParams.MATCH_PARENT, dp(6))
             )
 
-            val lp = LayoutParams(dp(160), dp(4))
+            val lp = LayoutParams(dp(160), dp(6))
             lp.leftMargin = (resources.displayMetrics.widthPixels - dp(160)) / 2
             addView(edgeView, lp)
         } catch (t: Throwable) {
@@ -475,7 +477,17 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         }
     }
 
-    /** Panel entrance: slide down from behind the status bar + fade + subtle scale. */
+    /** Cancels any in-flight hide so a fast re-open never snaps back to GONE. */
+    fun cancelHideAnimation() {
+        try {
+            hideSafety?.let { mainHandler.removeCallbacks(it) }
+            hideSafety = null
+            animate().cancel()
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Panel entrance: instant show; all motion comes from ShadeMotion. */
     fun animateShow() {
         try {
             // Cancel any in-flight hide (including its stale safety net) first,
