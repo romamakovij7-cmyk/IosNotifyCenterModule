@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">iOS Notification Shade</string>
+    <string name="xposed_description">iOS-style notification panel / lockscreen shade for One UI 9 (MVP: core hooking + basic layout).</string>
+</resources>
