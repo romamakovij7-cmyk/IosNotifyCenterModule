@@ -29,7 +29,10 @@ class StockShadeSuppressorHook(private val lpparam: LoadPackageParam) {
     fun install() {
         val targets = listOf(
             "com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout",
-            "com.android.systemui.statusbar.notification.footer.ui.view.FooterView"
+            "com.android.systemui.statusbar.notification.footer.ui.view.FooterView",
+            // Samsung's lock-screen clock/date container (may live in another window -
+            // process-wide hooks catch it regardless of where it is attached).
+            "com.android.systemui.keyguard.ui.view.KeyguardRootView"
         )
         for (name in targets) {
             armVisibility(name)

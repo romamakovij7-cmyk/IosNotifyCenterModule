@@ -5,6 +5,7 @@ import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.WindowManager
 import com.iosshade.systemui.core.Log
 import com.iosshade.systemui.core.ModuleConfig
 import com.iosshade.systemui.core.ShadeEventBus
@@ -52,6 +53,38 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     /** True while the overlay is on screen. Read from the suppressor hook (main thread). */
     @Volatile
     private var shown = false
+
+    /** True while the panel state is keyguard (drives keyguard-content suppression). */
+    @Volatile
+    private var keyguard = false
+
+    /** Guards against re-entering hideOverlay while a hide animation is in flight. */
+    private var hiding = false
+
+    /**
+     * Heartbeat: One UI re-shows its stack/clock whenever IT decides to (layout
+     * passes, its own animations), not only during swipes - so per-event
+     * re-assertion is not enough. While our overlay is up, this re-pins
+     * everything every 300 ms; cancelled the moment we hide.
+     */
+    private val suppressionTick = object : Runnable {
+        override fun run() {
+            try {
+                if (!shown) return
+                val searchFrom = rootRef?.get()?.rootView
+                if (searchFrom != null) collectStockStacks(searchFrom, 0)
+                reassertHidden()
+                mainHandler.postDelayed(this, 300)
+            } catch (_: Throwable) {
+                // Never let the heartbeat die loudly; next show re-arms it anyway.
+            }
+        }
+    }
+
+    private fun startSuppressionTick() {
+        mainHandler.removeCallbacks(suppressionTick)
+        mainHandler.postDelayed(suppressionTick, 300)
+    }
 
     /** True when the notification data changed since the last render (main-thread only). */
     @Volatile
@@ -179,8 +212,14 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             val overlay = overlayRef?.get() ?: return
 
             val onKeyguard = state != ShadeEventBus.STATE_SHADE
+            keyguard = onKeyguard
+            // Hysteresis: while shown, only a real collapse (fraction under the
+            // lower threshold) hides us - One UI's settle bounce hovers just
+            // under the show threshold and would otherwise flicker.
+            val threshold =
+                if (shown) ModuleConfig.HIDE_FRACTION else ModuleConfig.MIN_SHOW_FRACTION
             val shouldShow =
-                fraction >= ModuleConfig.MIN_SHOW_FRACTION &&
+                fraction >= threshold &&
                     (!onKeyguard || ModuleConfig.SHOW_ON_KEYGUARD)
 
             if (!shouldShow) {
@@ -198,7 +237,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             // backdrop in sync with the pull (liquid glass -> wallpaper).
             if (shown) {
                 reassertHidden()
-                overlay.setExpansionFraction(fraction)
+                overlay.setPanelState(fraction, onKeyguard)
             }
 
             // Render only when something changed or we were hidden (cheap at 120 Hz).
@@ -221,6 +260,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             }
 
             if (!shown) {
+                hiding = false
                 // Re-assert z-order: SystemUI keeps adding windows (keyguard, bouncer...).
                 rootRef?.get()?.bringChildToFront(overlay)
                 // Lift above every sibling subtree so nothing stock can draw over us.
@@ -228,12 +268,13 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                     overlay.translationZ = 8f * overlay.resources.displayMetrics.density
                 } catch (_: Throwable) {
                 }
-                overlay.setExpansionFraction(fraction)
+                overlay.setPanelState(fraction, onKeyguard)
                 hideStockStack()
                 overlay.isClickable = true
                 overlay.isFocusable = true
                 overlay.animateShow()
                 shown = true
+                startSuppressionTick()
                 Log.i("Overlay shown (fraction=$fraction, state=$state)")
             }
         } catch (t: Throwable) {
@@ -245,9 +286,13 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     // Show / hide helpers
     // ------------------------------------------------------------------
     private fun hideOverlay(overlay: IOSNotificationShadeView, animated: Boolean) {
+        // Fraction events keep arriving while we animate out; ignore them.
+        if (hiding) return
         try {
             // `shown` must go false BEFORE restoring: the suppressor hook keys off it.
+            hiding = true
             shown = false
+            mainHandler.removeCallbacks(suppressionTick)
             overlay.isClickable = false
             overlay.isFocusable = false
 
@@ -257,9 +302,10 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             restoreStockStack()
 
             if (animated) {
-                overlay.animateHide { }
+                overlay.animateHide { hiding = false }
             } else {
                 overlay.visibility = View.GONE
+                hiding = false
             }
             Log.i("Overlay hidden")
         } catch (t: Throwable) {
@@ -269,6 +315,8 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             } catch (_: Throwable) {
             }
             shown = false
+            hiding = false
+            mainHandler.removeCallbacks(suppressionTick)
             restoreStockStack()
             Log.e("hideOverlay failed", t)
         }
@@ -282,6 +330,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     private fun hideStockStack() {
         try {
             val searchFrom = rootRef?.get()?.rootView ?: return
+            if (ModuleConfig.DUMP_WINDOW_VIEWS) dumpWindowViews()
             collectStockStacks(searchFrom, 0)
             var pinned = 0
             for (ref in hiddenStock) {
@@ -292,10 +341,64 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 }
             }
             if (hiddenStock.isNotEmpty()) {
-                Log.i("Stock notification shade hidden (${hiddenStock.size} view(s), $pinned freshly pinned)")
+                val names = hiddenStock.mapNotNull { it.get()?.javaClass?.simpleName }.distinct()
+                Log.i("Stock shade hidden (${hiddenStock.size} view(s), $pinned fresh): $names")
             }
         } catch (t: Throwable) {
             Log.e("hideStockStack failed", t)
+        }
+    }
+
+    /**
+     * TEMPORARY diagnostic (ModuleConfig.DUMP_WINDOW_VIEWS): enumerates every root
+     * view in the process (all windows) and logs clock/keyguard-ish classes, so the
+     * ghost lock-clock can be found and pinned by its real class name.
+     */
+    private fun dumpWindowViews() {
+        try {
+            val wmg = Class.forName("android.view.WindowManagerGlobal")
+            val inst = wmg.getMethod("getInstance").invoke(null) ?: return
+            val views = wmg.getDeclaredField("mViews").apply { isAccessible = true }.get(inst) as? List<*> ?: return
+            val params = wmg.getDeclaredField("mParams").apply { isAccessible = true }.get(inst) as? List<*> ?: return
+            for (i in views.indices) {
+                val v = views[i] as? View ?: continue
+                val p = params.getOrNull(i) as? WindowManager.LayoutParams
+                Log.i("WIN[$i] type=${p?.type} title=${p?.title} root=${v.javaClass.name}")
+                if (v is ViewGroup) dumpTree(v, 0)
+            }
+        } catch (t: Throwable) {
+            Log.e("dumpWindowViews failed", t)
+        }
+    }
+
+    private fun dumpTree(view: View, depth: Int) {
+        if (depth > 18) return
+        try {
+            val n = view.javaClass.name
+            val idName = try {
+                if (view.id != View.NO_ID) view.resources.getResourceEntryName(view.id) else ""
+            } catch (_: Throwable) {
+                ""
+            }
+            val hitsClass = n.contains("lock", ignoreCase = true) ||
+                n.contains("Keyguard") ||
+                n.contains("Compose") ||
+                n.contains("clock", ignoreCase = true) ||
+                n.contains("date", ignoreCase = true) ||
+                n.contains("header", ignoreCase = true) ||
+                n.contains("status", ignoreCase = true) ||
+                n.contains("carrier", ignoreCase = true)
+            val hitsId = idName.contains("clock", ignoreCase = true) ||
+                idName.contains("date", ignoreCase = true) ||
+                idName.contains("header", ignoreCase = true) ||
+                idName.contains("status", ignoreCase = true)
+            if (hitsClass || hitsId) {
+                Log.i("  TREE[${".".repeat(depth)}] $n id=$idName vis=${view.visibility} bounds=${try { view.width } catch (_: Throwable) { -1 }}x${try { view.height } catch (_: Throwable) { -1 }}")
+            }
+            if (view is ViewGroup) {
+                for (i in 0 until view.childCount) dumpTree(view.getChildAt(i), depth + 1)
+            }
+        } catch (_: Throwable) {
         }
     }
 
@@ -322,10 +425,23 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         try {
             val name = view.javaClass.name
             if (name.contains("NotificationStackScrollLayout") || name.contains("FooterView")) return true
+            // Samsung's shade-header clock (QSClockHeaderView + its pop-over) ghosts
+            // through our backdrop at the top-left. Deliberately NOT matching plain
+            // TextClock - our own clock is one.
+            if (name.contains("QSClock")) return true
+            // The BIG ghost: Samsung's full-screen lock-clock layer (id lock_clock_blur,
+            // SecKeyguardClockContainer with two bare TextClocks) - One UI shows it
+            // above the shade even over the home screen.
+            if (name.contains("SecKeyguardClockContainer") || name.contains("SecKeyguardStatusView")) return true
             if (view.id != View.NO_ID) {
                 val id = view.resources.getResourceEntryName(view.id)
                 if (id == "notification_stack_scroller" || id == "notification_footer") return true
+                if (id == "lock_clock_blur") return true
             }
+            // On the lock screen, Samsung's own clock/date/shortcuts live in the
+            // keyguard root (Compose-based on One UI 9) - they ghost through our
+            // translucent backdrop, so they go too while our panel is up.
+            if (keyguard && name.contains("KeyguardRootView")) return true
         } catch (_: Throwable) {
         }
         return false

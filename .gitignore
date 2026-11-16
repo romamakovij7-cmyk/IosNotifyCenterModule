@@ -5,3 +5,6 @@ app/build/
 .idea/
 local.properties
 *.apk.idsig
+
+# Apple's SF Pro is user-supplied; do not redistribute it in the repo.
+app/src/main/assets/fonts/SF-Pro*.ttf

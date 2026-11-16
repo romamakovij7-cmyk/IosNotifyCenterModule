@@ -65,14 +65,18 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     private val springInterpolator = OvershootInterpolator(0.8f)
     private val hideInterpolator = AccelerateInterpolator(1.2f)
 
+    /** True while the user is swipe-closing the panel with a finger down. */
+    private var userDragging = false
+    private var dragStartY = 0f
+
     init {
         clipToPadding = false
         clipChildren = false
 
-        // Translucent glass backdrop: dim the wallpaper like iOS does, instead of
-        // covering it. The stock notification stack is fully suppressed by the
-        // controller + hook, so nothing stock bleeds through any more.
-        setBackgroundColor(backdropColor())
+        // Clear backdrop: the wallpaper shows through fully (the user asked for
+        // no frost/blur). A whisper of dim is added only while rolling (see
+        // setPanelState) and fades to perfectly clear at full expansion.
+        setBackgroundColor(0x00000000)
 
         scroll.isFillViewport = true
         scroll.overScrollMode = ScrollView.OVER_SCROLL_NEVER
@@ -83,6 +87,57 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         // Tap on empty area = close (children like cards and the x keep their own taps).
         scroll.isClickable = true
         scroll.setOnClickListener { closePanel() }
+
+        // Swipe-up-to-close, iOS lock-screen style: the content tracks the finger
+        // 1:1 while pushing up; release far enough and the panel closes, release
+        // early and it springs back. Purely observational (never consumes the
+        // touch), so card taps and list scrolling keep working.
+        scroll.setOnTouchListener { _, ev ->
+            try {
+                when (ev.actionMasked) {
+                    android.view.MotionEvent.ACTION_DOWN -> {
+                        dragStartY = ev.rawY
+                        false
+                    }
+                    android.view.MotionEvent.ACTION_MOVE -> {
+                        val dy = ev.rawY - dragStartY
+                        // Swipe up only, and only when the list itself cannot scroll
+                        // further (so scrolling long lists never fights the close).
+                        if (dy < 0 && !scroll.canScrollVertically(1)) {
+                            userDragging = true
+                            column.translationY = dy * 0.85f
+                            column.alpha = (1f + dy / dp(300)).coerceIn(0.25f, 1f)
+                        } else if (dy > 0) {
+                            userDragging = false
+                        }
+                        false
+                    }
+                    android.view.MotionEvent.ACTION_UP,
+                    android.view.MotionEvent.ACTION_CANCEL -> {
+                        if (userDragging) {
+                            userDragging = false
+                            val dy = ev.rawY - dragStartY
+                            if (dy < -dp(80)) {
+                                closePanel()
+                            } else {
+                                column.animate().cancel()
+                                column.animate()
+                                    .translationY(0f)
+                                    .alpha(1f)
+                                    .setDuration(280L)
+                                    .setInterpolator(springInterpolator)
+                                    .withLayer()
+                                    .start()
+                            }
+                        }
+                        false
+                    }
+                    else -> false
+                }
+            } catch (_: Throwable) {
+                false
+            }
+        }
 
         column.orientation = LinearLayout.VERTICAL
         column.setPadding(0, 0, 0, dp(24))
@@ -366,6 +421,8 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             hideSafety?.let { mainHandler.removeCallbacks(it) }
             hideSafety = null
             animate().cancel()
+            column.animate().cancel()
+            userDragging = false
             pivotY = 0f
             alpha = 0f
             translationY = dp(-48).toFloat()
@@ -402,6 +459,10 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                     translationY = 0f
                     scaleX = 1f
                     scaleY = 1f
+                    // Reset the finger-follow transform so the next show starts clean.
+                    column.translationY = 0f
+                    column.alpha = 1f
+                    userDragging = false
                     onDone()
                 }
             }
@@ -443,20 +504,22 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     }
 
     /**
-     * The signature iOS-26 move requested by the user: while the panel is being
-     * pulled down it reads as dark liquid glass, and as it reaches full expansion
-     * the frost melts away so the wallpaper shows through.
+     * The signature iOS move: while the panel is pulled down the content
+     * physically FOLLOWS THE FINGER (slides in from behind the status bar,
+     * fading up), like the lock-screen swipe. The backdrop itself stays clear
+     * - the wallpaper is always visible, no frost/blur.
      */
-    fun setExpansionFraction(fraction: Float) {
+    fun setPanelState(fraction: Float, onKeyguard: Boolean) {
         try {
             val f = fraction.coerceIn(0f, 1f)
-            // Reach the "clear wallpaper" state slightly before fully open (0.7).
-            val t = (f / 0.7f).coerceIn(0f, 1f)
-            val aFrom = 0xB0 // strong frost while pulling
-            val aTo = 0x26   // whisper of dim when fully down
-            val alpha = (aFrom + ((aTo - aFrom) * t).toInt()).coerceIn(0, 255)
-            val base = if (isNight()) 0x000B0B0F.toInt() else 0x00F2F2F7
-            setBackgroundColor((alpha shl 24) or base)
+            val t = ((f - 0.04f) / 0.96f).coerceIn(0f, 1f)
+            if (!userDragging) {
+                column.translationY = -(1f - t) * dp(150)
+                column.alpha = 0.3f + 0.7f * t
+            }
+            // Whisper of dim while rolling, perfectly clear when fully down.
+            val alpha = (0x30 + ((0x00 - 0x30) * t).toInt()).coerceIn(0, 255)
+            setBackgroundColor(alpha shl 24)
         } catch (_: Throwable) {
         }
     }
@@ -470,9 +533,6 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     private fun isNight(): Boolean =
         (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
-
-    private fun backdropColor(): Int =
-        if (isNight()) 0x990B0B0F.toInt() else 0x99F2F2F7.toInt()
 
     private fun iconColor(): Int =
         if (isNight()) 0xFFFFFFFF.toInt() else 0xFF202124.toInt()
@@ -511,9 +571,9 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 stroke.strokeWidth = 1.8f * s
 
                 if (kind == KIND_FLASH) {
-                    // Head + body of a pocket torch.
-                    canvas.drawRoundRect(8.5f * s, 3.5f * s, 15.5f * s, 7.5f * s, 1.6f * s, 1.6f * s, fill)
-                    canvas.drawRoundRect(10f * s, 9f * s, 14f * s, 19f * s, 1.6f * s, 1.6f * s, fill)
+                    // A pocket torch: wide head, gap, narrower body.
+                    canvas.drawRoundRect(7.5f * s, 3.5f * s, 16.5f * s, 7.5f * s, 1.6f * s, 1.6f * s, fill)
+                    canvas.drawRoundRect(10.2f * s, 9f * s, 13.8f * s, 19.5f * s, 1.6f * s, 1.6f * s, fill)
                 } else {
                     // Camera body + lens + top bump.
                     canvas.drawRoundRect(3.5f * s, 7f * s, 20.5f * s, 19f * s, 3f * s, 3f * s, stroke)

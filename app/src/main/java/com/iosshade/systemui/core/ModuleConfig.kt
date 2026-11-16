@@ -12,11 +12,18 @@ object ModuleConfig {
     const val MIN_SHOW_FRACTION = 0.04f
 
     /**
-     * Show the custom panel on the lockscreen (shade_locked / keyguard states) too.
-     * When true, only notifications with VISIBILITY_PUBLIC are rendered on the keyguard,
-     * mirroring One UI's own privacy filtering.
+     * Once shown, the panel hides only BELOW this fraction. The gap between the
+     * two thresholds (hysteresis) stops One UI's settle-bounce from flickering
+     * hide/show cycles at the bottom of the pull.
      */
-    const val SHOW_ON_KEYGUARD = true
+    const val HIDE_FRACTION = 0.02f
+
+    /**
+     * Show the custom panel on the lockscreen (shade_locked / keyguard states) too.
+     * The user asked for the module to stay OFF the lock screen - stock One UI
+     * keyguard stays fully intact there.
+     */
+    const val SHOW_ON_KEYGUARD = false
 
     /** Tag used to make overlay attachment idempotent across multiple hook triggers. */
     const val TAG_OVERLAY = "ios_notif_shade_overlay"
@@ -27,4 +34,12 @@ object ModuleConfig {
      * One UI 9 method names, then copy them into the candidate lists.
      */
     const val DUMP_METHODS = false
+
+    /**
+     * TEMPORARY diagnostic: on every panel show, dump all process windows and any
+     * clock/keyguard-ish view classes. (Calibration complete: the ghost was
+     * QSClockHeaderView + QSClockPopOverImmersiveView + lock_clock_blur's
+     * SecKeyguardClockContainer - all matched now.)
+     */
+    const val DUMP_WINDOW_VIEWS = false
 }

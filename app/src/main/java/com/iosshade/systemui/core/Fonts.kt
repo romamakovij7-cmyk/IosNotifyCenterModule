@@ -4,46 +4,73 @@ import android.content.Context
 import android.graphics.Typeface
 
 /**
- * Apple-SF-look typefaces for the overlay.
+ * Typefaces for the overlay - SF Pro first.
  *
- * San Francisco itself is Apple-proprietary and cannot be bundled; Inter is the
- * widely used, freely licensed (SIL OFL) typeface designed to match its metrics
- * and feel, so it is bundled with the module APK under assets/fonts/.
- *
- * The module's own assets are NOT visible from the SystemUI process - they are
- * loaded through a private package context of the module APK. If anything fails,
- * every getter falls back to the closest system font, so text always renders.
+ * The user supplies Apple's SF Pro ("SF-Pro.ttf", a variable font) in
+ * assets/fonts; weight selection uses Typeface.create(family, weight) which
+ * resolves variable-font instances on modern Android. If the SF file is absent
+ * (it is deliberately NOT redistributed in the git repo), we fall back to the
+ * bundled Inter - the freely licensed typeface designed to SF's metrics - and
+ * finally to the closest system font, so text always renders.
  */
 object Fonts {
 
     private const val MODULE_PKG = "com.iosshade.systemui"
 
     @Volatile private var cachedContext: Context? = null
+    @Volatile private var sfBase: Typeface? = null
+    @Volatile private var sfProbed = false
     @Volatile private var light: Typeface? = null
     @Volatile private var regular: Typeface? = null
     @Volatile private var semiBold: Typeface? = null
 
-    /** Huge lock-screen clock (SF Pro Display Light look). */
+    /** Huge lock-screen clock (SF Pro Light). */
     fun light(context: Context): Typeface =
-        light ?: load(context, "Inter-Light.ttf", "sans-serif-light").also { light = it }
+        light ?: pick(context, 300, "fonts/Inter-Light.ttf", "sans-serif-light").also { light = it }
 
-    /** Body text. */
+    /** Body text (SF Pro Regular). */
     fun regular(context: Context): Typeface =
-        regular ?: load(context, "Inter-Regular.ttf", "sans-serif").also { regular = it }
+        regular ?: pick(context, 400, "fonts/Inter-Regular.ttf", "sans-serif").also { regular = it }
 
-    /** Titles / header (SF Pro Semibold look). */
+    /** Titles / header (SF Pro Semibold). */
     fun semiBold(context: Context): Typeface =
-        semiBold ?: load(context, "Inter-SemiBold.ttf", "sans-serif-medium").also { semiBold = it }
+        semiBold ?: pick(context, 600, "fonts/Inter-SemiBold.ttf", "sans-serif-medium").also { semiBold = it }
 
-    private fun load(context: Context, asset: String, sysFallback: String): Typeface {
-        return try {
+    private fun pick(context: Context, weight: Int, interAsset: String, sysFallback: String): Typeface {
+        // 1) User-supplied SF Pro (highest priority, every text and glyph label).
+        val sf = sf(context)
+        if (sf != null) {
+            try {
+                return Typeface.create(sf, weight)
+            } catch (t: Throwable) {
+                return sf
+            }
+        }
+        // 2) Bundled Inter fallback.
+        asset(context, interAsset)?.let { return it }
+        // 3) System fallback.
+        return Typeface.create(sysFallback, Typeface.NORMAL)
+    }
+
+    private fun sf(context: Context): Typeface? {
+        if (sfProbed) return sfBase
+        sfProbed = true
+        sfBase = try {
             val moduleContext = cachedContext
                 ?: context.createPackageContext(MODULE_PKG, 0).also { cachedContext = it }
-            Typeface.createFromAsset(moduleContext.assets, "fonts/$asset")
-                ?: Typeface.create(sysFallback, Typeface.NORMAL)
+            Typeface.createFromAsset(moduleContext.assets, "fonts/SF-Pro.ttf")
         } catch (t: Throwable) {
-            Log.w("Fonts: $asset unavailable - system fallback (${t.message})")
-            Typeface.create(sysFallback, Typeface.NORMAL)
+            Log.w("Fonts: SF-Pro.ttf unavailable - using Inter/system fallback")
+            null
         }
+        return sfBase
+    }
+
+    private fun asset(context: Context, path: String): Typeface? = try {
+        val moduleContext = cachedContext
+            ?: context.createPackageContext(MODULE_PKG, 0).also { cachedContext = it }
+        Typeface.createFromAsset(moduleContext.assets, path)
+    } catch (t: Throwable) {
+        null
     }
 }
