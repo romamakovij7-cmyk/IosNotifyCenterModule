@@ -10,7 +10,6 @@ import android.hardware.camera2.CameraManager
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
@@ -20,7 +19,6 @@ import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.TextClock
 import com.iosshade.systemui.core.Log
 import com.iosshade.systemui.data.NotifModel
 import com.iosshade.systemui.hooks.PanelExpansionHook
@@ -47,9 +45,9 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     private val scroll = ScrollView(context)
     private val column = LinearLayout(context)
     private val cardsColumn = LinearLayout(context)
-    private val dateView = TextClock(context)
-    private val timeView = TextClock(context)
+    private val wallpaper = android.widget.ImageView(context)
     private val edgeView = FrameLayout(context)
+    private var blurredWallpaper: android.graphics.Bitmap? = null
     private var torchButton: FrameLayout? = null
     private var torchOn = false
 
@@ -79,9 +77,19 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         clipToPadding = false
         clipChildren = false
 
-        // Transparent backdrop: the ORIGINAL lock screen (revealed by the
-        // controller) is the background - the wallpaper and Samsung's clock
-        // show straight through. Nothing frosted, nothing solid.
+        // The real wallpaper as our background: One UI blurs the home screen
+        // behind the shade, so we draw the SHARP wallpaper ourselves. This
+        // also hides the home-screen date widget ("ghost date").
+        try {
+            wallpaper.scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+            addView(wallpaper, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        } catch (t: Throwable) {
+            Log.e("wallpaper init failed", t)
+        }
+
+        // Transparent backdrop: the wallpaper shows through fully (the user asked for
+        // no frost/blur). A whisper of dim is added only while rolling (see
+        // setPanelState) and fades to perfectly clear at full expansion.
         setBackgroundColor(0x00000000)
 
         // NOT fill-viewport: the sheet must wrap its content so the bottom edge
@@ -158,17 +166,17 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         column.orientation = LinearLayout.VERTICAL
         column.setPadding(dp(16), 0, dp(16), dp(16))
 
-        buildClock()
-
         // Dedicated container for notification cards: render() only ever touches
         // this child, so nothing else in the hierarchy can ever be disturbed.
         cardsColumn.orientation = LinearLayout.VERTICAL
+        // Cards start BELOW Samsung's own clock zone (the top ~43% of the
+        // screen, where the revealed lock-screen clock lives).
         column.addView(
             cardsColumn,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(20) }
+            ).apply { topMargin = (resources.displayMetrics.heightPixels * 0.64f).toInt() }
         )
 
         buildLockButtons()
@@ -219,55 +227,96 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     }
 
     // ------------------------------------------------------------------
-    // Clock block - the user's "main" clock style: BIG white time + date,
-    // system font (NOT the iOS/SF-Pro thin clock). Self-updating TextClocks.
+    // Refresh the wallpaper background so it covers One UI's blurred home
+    // screen behind the shade. Called on every show (cheap - cached bitmap).
     // ------------------------------------------------------------------
-    private fun buildClock() {
+    private fun refreshWallpaper() {
         try {
-            val clockBlock = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_HORIZONTAL
-            }
+            val wm = android.app.WallpaperManager.getInstance(context)
+            val drawable = wm.drawable ?: return
+            wallpaper.setImageDrawable(drawable)
 
-            dateView.apply {
-                format12Hour = "EEE, MMM d"
-                format24Hour = "EEE, MMM d"
-                isAllCaps = true
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-                setTextColor(0xE6FFFFFF.toInt())
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
-                gravity = Gravity.CENTER
-                includeFontPadding = false
-                setShadowLayer(dp(6).toFloat(), 0f, dp(2).toFloat(), 0x80000000.toInt())
-            }
-            timeView.apply {
-                format12Hour = "h:mm"
-                format24Hour = "HH:mm"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 96f)
-                setTextColor(0xFFFFFFFF.toInt())
-                typeface = android.graphics.Typeface.DEFAULT
-                gravity = Gravity.CENTER
-                includeFontPadding = false
-                setShadowLayer(dp(8).toFloat(), 0f, dp(2).toFloat(), 0x80000000.toInt())
-            }
+            // Build a blurred copy of the wallpaper once per show. The glass
+            // buttons sample the right region of it (native backdrop blur,
+            // the same idea as the Backdrop/Kyant library - no Compose needed).
+            val w = resources.displayMetrics.widthPixels
+            val h = resources.displayMetrics.heightPixels
+            val sharp = android.graphics.Bitmap.createBitmap(
+                w, h, android.graphics.Bitmap.Config.ARGB_8888
+            )
+            val c = android.graphics.Canvas(sharp)
+            val iw = drawable.intrinsicWidth.coerceAtLeast(1)
+            val ih = drawable.intrinsicHeight.coerceAtLeast(1)
+            val scale = maxOf(w.toFloat() / iw, h.toFloat() / ih)
+            val dw = (iw * scale).toInt()
+            val dh = (ih * scale).toInt()
+            drawable.setBounds((w - dw) / 2, (h - dh) / 2, (w + dw) / 2, (h + dh) / 2)
+            drawable.draw(c)
 
-            clockBlock.addView(
-                dateView,
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            )
-            clockBlock.addView(
-                timeView,
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                    .apply { topMargin = dp(2) }
-            )
-
-            column.addView(
-                clockBlock,
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                    .apply { topMargin = dp(12); bottomMargin = dp(8) }
-            )
+            // Cheap separable box blur on a downscaled copy: same visual result
+            // as a backdrop blur, no API-level RenderNode dependency.
+            val sw = (w / 8).coerceAtLeast(2)
+            val sh = (h / 8).coerceAtLeast(2)
+            val small = android.graphics.Bitmap.createScaledBitmap(sharp, sw, sh, true)
+            val px = IntArray(sw * sh)
+            small.getPixels(px, 0, sw, 0, 0, sw, sh)
+            val tmp = IntArray(px.size)
+            val out = IntArray(px.size)
+            val r = 3
+            for (y in 0 until sh) {
+                for (x in 0 until sw) {
+                    var a = 0; var rr = 0; var g = 0; var b = 0; var n = 0
+                    for (k in -r..r) {
+                        val xx = (x + k).coerceIn(0, sw - 1)
+                        val p = px[y * sw + xx]
+                        a += p ushr 24; rr += (p shr 16) and 0xFF
+                        g += (p shr 8) and 0xFF; b += p and 0xFF; n++
+                    }
+                    tmp[y * sw + x] = (a / n shl 24) or (rr / n shl 16) or (g / n shl 8) or (b / n)
+                }
+            }
+            for (y in 0 until sh) {
+                for (x in 0 until sw) {
+                    var a = 0; var rr = 0; var g = 0; var b = 0; var n = 0
+                    for (k in -r..r) {
+                        val yy = (y + k).coerceIn(0, sh - 1)
+                        val p = tmp[yy * sw + x]
+                        a += p ushr 24; rr += (p shr 16) and 0xFF
+                        g += (p shr 8) and 0xFF; b += p and 0xFF; n++
+                    }
+                    out[y * sw + x] = (a / n shl 24) or (rr / n shl 16) or (g / n shl 8) or (b / n)
+                }
+            }
+            small.setPixels(out, 0, sw, 0, 0, sw, sh)
+            blurredWallpaper = android.graphics.Bitmap.createScaledBitmap(small, w, h, true)
         } catch (t: Throwable) {
-            Log.e("buildClock failed", t)
+            Log.w("refreshWallpaper failed: ${t.message}")
+        }
+    }
+
+    /** Samples the blurred wallpaper at this view's on-screen position. */
+    private inner class GlassBackdropView : View(context) {
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            try {
+                val bmp = blurredWallpaper ?: return
+                val rootW = rootView.width.coerceAtLeast(1)
+                val rootH = rootView.height.coerceAtLeast(1)
+                val loc = IntArray(2)
+                getLocationOnScreen(loc)
+                val sx = bmp.width.toFloat() / rootW
+                val sy = bmp.height.toFloat() / rootH
+                val l = (loc[0] * sx).toInt().coerceAtLeast(0)
+                val t = (loc[1] * sy).toInt().coerceAtLeast(0)
+                val r = ((loc[0] + width) * sx).toInt().coerceAtMost(bmp.width)
+                val b = ((loc[1] + height) * sy).toInt().coerceAtMost(bmp.height)
+                if (r <= l || b <= t) return
+                val patch = android.graphics.Bitmap.createBitmap(bmp, l, t, r - l, b - t)
+                canvas.drawBitmap(
+                    patch, null,
+                    android.graphics.RectF(0f, 0f, width.toFloat(), height.toFloat()), null
+                )
+            } catch (_: Throwable) {
+            }
         }
     }
 
@@ -309,12 +358,32 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
 
     private fun circleButton(glyph: View): FrameLayout {
         return FrameLayout(context).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(if (isNight()) 0x33FFFFFF else 0x1A000000)
+            // Rounded outline: everything inside is clipped to the circle.
+            outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(v: View, o: android.graphics.Outline) {
+                    o.setOval(0, 0, v.width, v.height)
+                }
             }
-            val pad = dp(13)
-            setPadding(pad, pad, pad, pad)
+            clipToOutline = true
+
+            // 1) Blurred piece of the wallpaper behind the button (real glass).
+            addView(
+                GlassBackdropView(),
+                LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+            )
+            // 2) Translucent glass tint + hairline rim.
+            addView(
+                View(context).apply {
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        orientation = GradientDrawable.Orientation.TOP_BOTTOM
+                        colors = intArrayOf(0x42FFFFFF, 0x1EFFFFFF)
+                        setStroke(dp(1), 0x66FFFFFF)
+                    }
+                },
+                LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+            )
+            // 3) The glyph on top.
             addView(
                 glyph,
                 FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
@@ -456,6 +525,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             column.animate().cancel()
             userDragging = false
             pivotY = 0f
+            refreshWallpaper()
             edgeView.animate().cancel()
             edgeView.alpha = 0f
             alpha = 0f
@@ -537,6 +607,17 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 WindowInsets.Type.displayCutout()
             val safe = insets.getInsets(mask)
             setPadding(dp(14), safe.top + dp(4), dp(14), safe.bottom + dp(4))
+            // The wallpaper must cover the WHOLE screen, including the areas
+            // behind the status/nav bars - cancel the root padding for it.
+            try {
+                val lp = wallpaper.layoutParams as? LayoutParams ?: return
+                lp.leftMargin = -paddingLeft
+                lp.topMargin = -paddingTop
+                lp.rightMargin = -paddingRight
+                lp.bottomMargin = -paddingBottom
+                wallpaper.layoutParams = lp
+            } catch (_: Throwable) {
+            }
         } catch (t: Throwable) {
             Log.e("applyWindowInsets failed", t)
         }

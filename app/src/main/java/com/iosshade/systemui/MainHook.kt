@@ -7,6 +7,7 @@ import com.iosshade.systemui.hooks.StockShadeSuppressorHook
 import com.iosshade.systemui.hooks.PanelExpansionHook
 import com.iosshade.systemui.hooks.ShadeOverlayHook
 import com.iosshade.systemui.hooks.ControlCenterGuardHook
+import com.iosshade.systemui.hooks.ClockForceHook
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.IXposedHookZygoteInit
 import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam
@@ -65,6 +66,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
             installGroup("NotificationSourceHook") { NotificationSourceHook(lpparam).install() }
             installGroup("StockShadeSuppressorHook") { StockShadeSuppressorHook(lpparam).install() }
             installGroup("ControlCenterGuardHook") { ControlCenterGuardHook(lpparam).install() }
+            installGroup("ClockForceHook") { ClockForceHook(lpparam).install() }
 
             Log.i("All hook groups installed. Review WARN/ERROR lines above for One UI 9 calibration.")
         } catch (t: Throwable) {

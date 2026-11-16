@@ -39,11 +39,27 @@ class ControlCenterGuardHook(private val lpparam: LoadPackageParam) {
                         override fun beforeHookedMethod(param: MethodHookParam) {
                             try {
                                 val ev = param.args[0] as? MotionEvent ?: return
-                                if (ev.actionMasked != MotionEvent.ACTION_DOWN) return
-                                val width = (param.thisObject as? android.view.View)?.width ?: 0
+                                val view = param.thisObject as? android.view.View ?: return
+                                val width = view.width
                                 if (width <= 0) return
-                                // Right ~40% of the screen = Control Center gesture.
-                                ShadeEventBus.controlCenterGesture = ev.rawX >= width * 0.6f
+                                when (ev.actionMasked) {
+                                    MotionEvent.ACTION_DOWN -> {
+                                        // Only a pull that STARTS in the status-bar strip
+                                        // counts. Taps on notification cards (lower down)
+                                        // must not poison the next notification pull.
+                                        val top = (48 * view.resources.displayMetrics.density).toInt()
+                                        if (ev.rawY > top) return
+                                        // Right ~40% of the screen = Control Center gesture.
+                                        ShadeEventBus.controlCenterGesture = ev.rawX >= width * 0.6f
+                                    }
+                                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                        // A gesture that never opened anything must not
+                                        // leave the guard latched for the next pull.
+                                        if (ShadeEventBus.lastFraction < 0.1f) {
+                                            ShadeEventBus.controlCenterGesture = false
+                                        }
+                                    }
+                                }
                             } catch (_: Throwable) {
                                 // Never propagate into SystemUI touch handling.
                             }

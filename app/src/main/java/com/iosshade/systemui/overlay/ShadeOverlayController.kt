@@ -1,6 +1,7 @@
 package com.iosshade.systemui.overlay
 
 import android.content.Context
+import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -273,6 +274,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                     overlay.isClickable = false
                     overlay.isFocusable = false
                     restoreStockStack()
+                    restoreClockLayers()
                     return
                 }
             }
@@ -289,6 +291,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 overlay.setPanelState(fraction, onKeyguard)
                 hideStockStack()
                 killShadeBlur()
+                revealClockLayer()
                 overlay.isClickable = true
                 overlay.isFocusable = true
                 overlay.animateShow()
@@ -320,6 +323,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             // empty shade that pops its content in later. Samsung's clock layer
             // goes back to EXACTLY what it was (visibility + blur background).
             restoreStockStack()
+            restoreClockLayers()
 
             if (animated) {
                 overlay.animateHide { hiding = false }
@@ -338,6 +342,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             hiding = false
             mainHandler.removeCallbacks(suppressionTick)
             restoreStockStack()
+            restoreClockLayers()
             Log.e("hideOverlay failed", t)
         }
     }
@@ -495,10 +500,10 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             // Samsung's shade-header clock (QSClockHeaderView + its pop-over): part
             // of the shade chrome. Deliberately NOT matching plain TextClock.
             if (name.contains("QSClock")) return true
-            // The lock-clock layer shows only a BLURRED LOCK WALLPAPER when the
-            // shade is pulled over home (the clock itself gets re-hidden by One UI)
-            // - the user wants the plain wallpaper and OUR clock instead. Pin it.
-            if (name.contains("SecKeyguardStatusView") || name.contains("SecKeyguardClockContainer")) return true
+            // lock_clock_blur is ONLY the blurred lock-wallpaper backdrop; the
+            // real clock lives in the sibling SecKeyguardStatusView. Pin the
+            // blur layer so it can't frost our sharp wallpaper.
+            if (name.contains("SecKeyguardClockContainer")) return true
             if (view.id != View.NO_ID) {
                 val id = view.resources.getResourceEntryName(view.id)
                 if (id == "notification_stack_scroller" || id == "notification_footer") return true
@@ -510,6 +515,189 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     }
 
     /** Layer 3: re-assert on every shade event while our overlay is visible. */
+    /**
+     * The user wants the ORIGINAL Samsung lock-screen clock. One UI's shade
+     * clock layer (lock_clock_blur -> SecKeyguardStatusView -> SecKeyguardClock
+     * Container -> live TextClocks) is revealed, with its blur backdrop
+     * stripped. One UI keeps re-hiding the clock container, so ClockForceHook
+     * pins it VISIBLE while our panel is up. Restored exactly on hide.
+     */
+    private class ClockLayerEntry(
+        val view: WeakReference<View>,
+        val visibility: Int,
+        val background: Drawable?,
+        val alpha: Float,
+        val translationY: Float,
+    )
+
+    private val clockLayers = ArrayList<ClockLayerEntry>()
+
+    /** The top clock layer view, moved into our panel (above wallpaper, below cards). */
+    private class MovedClockLayer(
+        val view: WeakReference<View>,
+        val parent: WeakReference<ViewGroup>,
+        val index: Int,
+    )
+
+    private var movedClockLayer: MovedClockLayer? = null
+    private var clockTreeDumped = false
+
+    private fun dumpClockTree(view: View, depth: Int) {
+        if (depth > 12) return
+        try {
+            val n = view.javaClass.name
+            val idName = try {
+                if (view.id != View.NO_ID) view.resources.getResourceEntryName(view.id) else ""
+            } catch (_: Throwable) {
+                ""
+            }
+            Log.i(
+                "CLOCK-TREE[${".".repeat(depth)}] $n id=$idName vis=${view.visibility} " +
+                    "alpha=${view.alpha} bounds=${view.width}x${view.height}@${view.top},${view.left}"
+            )
+            if (view is ViewGroup) {
+                for (i in 0 until view.childCount) dumpClockTree(view.getChildAt(i), depth + 1)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun isClockLayer(view: View): Boolean = try {
+        val name = view.javaClass.name
+        name.contains("SecKeyguardStatusView") ||
+            name.contains("SecKeyguardClockContainer") ||
+            name.contains("DigitalHorizontalClockView") ||
+            name.contains("ClockNonePaddingTextView") ||
+            name.contains("ClockTextView")
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** Finds the real clock container (SecKeyguardStatusView), not the blur layer. */
+    private fun findTopClockLayer(view: View, depth: Int): View? {
+        if (depth > 32) return null
+        try {
+            if (view.javaClass.name.contains("SecKeyguardStatusView")) return view
+            if (view is ViewGroup) {
+                for (i in 0 until view.childCount) {
+                    val found = findTopClockLayer(view.getChildAt(i), depth + 1)
+                    if (found != null) return found
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return null
+    }
+
+    private fun revealClockLayer() {
+        try {
+            val overlay = overlayRef?.get() ?: return
+            if (movedClockLayer != null) {
+                // Already inside our panel - just re-pin visibility (One UI keeps
+                // trying to hide its clock views).
+                for (entry in clockLayers) {
+                    val v = entry.view.get() ?: continue
+                    if (v.visibility != View.VISIBLE) v.visibility = View.VISIBLE
+                    // Samsung animates this view to alpha 0 over home - force it
+                    // opaque while our panel is up, otherwise the clock is invisible.
+                    if (v.alpha < 1f) v.alpha = 1f
+                }
+                return
+            }
+            val root = rootRef?.get()?.rootView ?: return
+            val layer = findTopClockLayer(root, 0) ?: return
+            val parent = layer.parent as? ViewGroup ?: return
+            val index = parent.indexOfChild(layer)
+
+            // Remember every clock-layer view (visibility + original background)
+            // and strip the blurred lock-wallpaper backdrop.
+            collectClockLayers(layer, 0)
+
+            parent.removeView(layer)
+            // Index 1 = above our wallpaper (0), below cards/buttons/edge.
+            overlay.addView(
+                layer,
+                1.coerceAtMost(overlay.childCount),
+                layer.layoutParams ?: ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            )
+            movedClockLayer = MovedClockLayer(WeakReference(layer), WeakReference(parent), index)
+
+            for (entry in clockLayers) {
+                val v = entry.view.get() ?: continue
+                if (v.visibility != View.VISIBLE) v.visibility = View.VISIBLE
+                if (v.alpha < 1f) v.alpha = 1f
+            }
+            // One-shot structural dump so we can see which clock child One UI
+            // keeps hidden (calibration; removed in the next release).
+            if (!clockTreeDumped) {
+                clockTreeDumped = true
+                dumpClockTree(layer, 0)
+            }
+            Log.i("Original Samsung clock revealed inside the panel")
+        } catch (t: Throwable) {
+            Log.e("revealClockLayer failed", t)
+        }
+    }
+
+    private fun collectClockLayers(view: View, depth: Int) {
+        if (depth > 32) return
+        try {
+            if (isClockLayer(view) && clockLayers.none { it.view.get() === view }) {
+                clockLayers.add(
+                    ClockLayerEntry(
+                        WeakReference(view), view.visibility, view.background,
+                        view.alpha, view.translationY
+                    )
+                )
+                view.alpha = 1f
+                // Lift the clock a bit higher, as requested (top layer only).
+                if (view.javaClass.name.contains("SecKeyguardStatusView")) {
+                    view.translationY = view.translationY - 60f * view.resources.displayMetrics.density
+                }
+                try {
+                    view.background = null // plain wallpaper, no blur backdrop
+                    view.setRenderEffect(null)
+                } catch (_: Throwable) {
+                }
+            }
+            if (view is ViewGroup) {
+                for (i in 0 until view.childCount) collectClockLayers(view.getChildAt(i), depth + 1)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun restoreClockLayers() {
+        val moved = movedClockLayer
+        movedClockLayer = null
+        if (moved != null) {
+            val view = moved.view.get()
+            val parent = moved.parent.get()
+            try {
+                (view?.parent as? ViewGroup)?.removeView(view)
+                if (view != null && parent != null) {
+                    parent.addView(view, moved.index.coerceAtMost(parent.childCount))
+                }
+            } catch (t: Throwable) {
+                Log.e("restoreClockLayer reparent failed", t)
+            }
+        }
+        for (entry in clockLayers) {
+            val v = entry.view.get() ?: continue
+            try {
+                v.visibility = entry.visibility
+                v.background = entry.background
+                v.alpha = entry.alpha
+                v.translationY = entry.translationY
+            } catch (_: Throwable) {
+            }
+        }
+        clockLayers.clear()
+    }
+
     private fun reassertHidden() {
         try {
             for (ref in hiddenStock) {
@@ -518,6 +706,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                     v.visibility = View.INVISIBLE
                 }
             }
+            revealClockLayer()
         } catch (t: Throwable) {
             Log.e("reassertHidden failed", t)
         }
