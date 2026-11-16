@@ -29,7 +29,9 @@ import java.util.Locale
  */
 class NotifCardView(
     context: android.content.Context,
-    private val model: NotifModel
+    private val model: NotifModel,
+    /** When set, a tap runs this instead of opening the app (collapse/expand flow). */
+    private val onTapOverride: (() -> Unit)? = null
 ) : LinearLayout(context) {
 
     init {
@@ -38,24 +40,19 @@ class NotifCardView(
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14), dp(13), dp(14), dp(13))
 
-            // Liquid Glass (iOS 26 style): vertical glass gradient with a lit top
-            // edge and a hairline rim - not the flat slab of iOS 18.
+            // Solid card, no liquid glass (per the user's request): flat fill,
+            // soft elevation shadow for separation from the sheet.
             background = GradientDrawable().apply {
-                cornerRadius = dp(26).toFloat()
-                orientation = GradientDrawable.Orientation.TOP_BOTTOM
-                colors = if (isNight()) {
-                    intArrayOf(0x54FFFFFF, 0x2BFFFFFF)
-                } else {
-                    intArrayOf(0xFAFFFFFF.toInt(), 0xE1FFFFFF.toInt())
-                }
-                setStroke(dp(1), if (isNight()) 0x26FFFFFF else 0x1F000000)
+                cornerRadius = dp(22).toFloat()
+                setColor(if (isNight()) 0xFF2C2C2E.toInt() else 0xFFFFFFFF.toInt())
             }
+            elevation = dp(3).toFloat()
             layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
                 .apply { bottomMargin = dp(10) }
 
             addView(buildIcon())
             addView(buildTextColumn())
-            setOnClickListener { open() }
+            setOnClickListener { onTapOverride?.invoke() ?: open() }
         } catch (t: Throwable) {
             Log.e("NotifCardView init failed for ${model.packageName}", t)
         }

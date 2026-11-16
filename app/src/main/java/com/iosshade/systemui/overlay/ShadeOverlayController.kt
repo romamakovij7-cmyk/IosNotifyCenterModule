@@ -1,5 +1,6 @@
 package com.iosshade.systemui.overlay
 
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -74,6 +75,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 val searchFrom = rootRef?.get()?.rootView
                 if (searchFrom != null) collectStockStacks(searchFrom, 0)
                 reassertHidden()
+                killShadeBlur()
                 mainHandler.postDelayed(this, 300)
             } catch (_: Throwable) {
                 // Never let the heartbeat die loudly; next show re-arms it anyway.
@@ -211,6 +213,20 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         try {
             val overlay = overlayRef?.get() ?: return
 
+            // Control Center (right-side pull) must stay 100% stock: our custom
+            // notification panel must NOT open over quick settings. The guard
+            // hook flags such gestures at the very first ACTION_DOWN.
+            if (ShadeEventBus.controlCenterGesture) {
+                if (shown || overlay.visibility != View.GONE) {
+                    hideOverlay(overlay, animated = false)
+                }
+                return
+            }
+            // A fully closed panel means the next pull can come from either side.
+            if (fraction < ModuleConfig.HIDE_FRACTION) {
+                ShadeEventBus.controlCenterGesture = false
+            }
+
             val onKeyguard = state != ShadeEventBus.STATE_SHADE
             keyguard = onKeyguard
             // Hysteresis: while shown, only a real collapse (fraction under the
@@ -233,10 +249,12 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             }
 
             // Maintenance while visible: One UI occasionally flips stack visibility
-            // during its own animations - put it straight back down, and keep the
-            // backdrop in sync with the pull (liquid glass -> wallpaper).
+            // during its own animations - put it straight back down, keep Samsung's
+            // own clock revealed, the wallpaper PLAIN (no frost), and the content
+            // glued to the pull.
             if (shown) {
                 reassertHidden()
+                killShadeBlur()
                 overlay.setPanelState(fraction, onKeyguard)
             }
 
@@ -270,6 +288,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 }
                 overlay.setPanelState(fraction, onKeyguard)
                 hideStockStack()
+                killShadeBlur()
                 overlay.isClickable = true
                 overlay.isFocusable = true
                 overlay.animateShow()
@@ -298,7 +317,8 @@ object ShadeOverlayController : ShadeEventBus.Listener {
 
             // Bring the stock stack back immediately: our backdrop fades out on top
             // of it, so the cross-fade reads as one dissolving panel instead of an
-            // empty shade that pops its content in later.
+            // empty shade that pops its content in later. Samsung's clock layer
+            // goes back to EXACTLY what it was (visibility + blur background).
             restoreStockStack()
 
             if (animated) {
@@ -319,6 +339,41 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             mainHandler.removeCallbacks(suppressionTick)
             restoreStockStack()
             Log.e("hideOverlay failed", t)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Wallpaper frost killer (the user wants NO blur behind the panel)
+    // ------------------------------------------------------------------
+
+    /**
+     * One UI draws a frosted blur BEHIND the shade window (blur-behind radius
+     * animated with the pull). The user wants the plain wallpaper behind the
+     * notifications, so while our panel is up the blur-behind flag is removed
+     * and the radius zeroed. Samsung re-sets its window params on its own
+     * (state changes, new pulls) - we simply re-kill on every event while shown.
+     */
+    private fun killShadeBlur() {
+        try {
+            val root = rootRef?.get() ?: return
+            val lp = root.layoutParams as? WindowManager.LayoutParams ?: return
+            var changed = false
+            if (lp.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND != 0) {
+                lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv()
+                changed = true
+            }
+            if (lp.blurBehindRadius != 0) {
+                Log.i("Shade blur-behind radius=${lp.blurBehindRadius} -> zeroing")
+                lp.blurBehindRadius = 0
+                changed = true
+            }
+            if (changed) {
+                val wm = root.context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+                wm?.updateViewLayout(root, lp)
+                Log.i("Shade blur-behind killed (flags=${lp.flags})")
+            }
+        } catch (t: Throwable) {
+            Log.e("killShadeBlur failed", t)
         }
     }
 
@@ -364,6 +419,12 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 val v = views[i] as? View ?: continue
                 val p = params.getOrNull(i) as? WindowManager.LayoutParams
                 Log.i("WIN[$i] type=${p?.type} title=${p?.title} root=${v.javaClass.name}")
+                if (p?.type == 2040) {
+                    Log.i(
+                        "SHADE WINDOW params: flags=${p.flags} blurBehindRadius=${p.blurBehindRadius} " +
+                            "dimAmount=${p.dimAmount} alpha=${p.alpha} layoutInScreen=${p.flags and WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN != 0}"
+                    )
+                }
                 if (v is ViewGroup) dumpTree(v, 0)
             }
         } catch (t: Throwable) {
@@ -387,11 +448,17 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 n.contains("date", ignoreCase = true) ||
                 n.contains("header", ignoreCase = true) ||
                 n.contains("status", ignoreCase = true) ||
-                n.contains("carrier", ignoreCase = true)
+                n.contains("carrier", ignoreCase = true) ||
+                n.contains("blur", ignoreCase = true) ||
+                n.contains("scrim", ignoreCase = true) ||
+                n.contains("dim", ignoreCase = true)
             val hitsId = idName.contains("clock", ignoreCase = true) ||
                 idName.contains("date", ignoreCase = true) ||
                 idName.contains("header", ignoreCase = true) ||
-                idName.contains("status", ignoreCase = true)
+                idName.contains("status", ignoreCase = true) ||
+                idName.contains("blur", ignoreCase = true) ||
+                idName.contains("scrim", ignoreCase = true) ||
+                idName.contains("dim", ignoreCase = true)
             if (hitsClass || hitsId) {
                 Log.i("  TREE[${".".repeat(depth)}] $n id=$idName vis=${view.visibility} bounds=${try { view.width } catch (_: Throwable) { -1 }}x${try { view.height } catch (_: Throwable) { -1 }}")
             }
@@ -425,23 +492,18 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         try {
             val name = view.javaClass.name
             if (name.contains("NotificationStackScrollLayout") || name.contains("FooterView")) return true
-            // Samsung's shade-header clock (QSClockHeaderView + its pop-over) ghosts
-            // through our backdrop at the top-left. Deliberately NOT matching plain
-            // TextClock - our own clock is one.
+            // Samsung's shade-header clock (QSClockHeaderView + its pop-over): part
+            // of the shade chrome. Deliberately NOT matching plain TextClock.
             if (name.contains("QSClock")) return true
-            // The BIG ghost: Samsung's full-screen lock-clock layer (id lock_clock_blur,
-            // SecKeyguardClockContainer with two bare TextClocks) - One UI shows it
-            // above the shade even over the home screen.
-            if (name.contains("SecKeyguardClockContainer") || name.contains("SecKeyguardStatusView")) return true
+            // The lock-clock layer shows only a BLURRED LOCK WALLPAPER when the
+            // shade is pulled over home (the clock itself gets re-hidden by One UI)
+            // - the user wants the plain wallpaper and OUR clock instead. Pin it.
+            if (name.contains("SecKeyguardStatusView") || name.contains("SecKeyguardClockContainer")) return true
             if (view.id != View.NO_ID) {
                 val id = view.resources.getResourceEntryName(view.id)
                 if (id == "notification_stack_scroller" || id == "notification_footer") return true
                 if (id == "lock_clock_blur") return true
             }
-            // On the lock screen, Samsung's own clock/date/shortcuts live in the
-            // keyguard root (Compose-based on One UI 9) - they ghost through our
-            // translucent backdrop, so they go too while our panel is up.
-            if (keyguard && name.contains("KeyguardRootView")) return true
         } catch (_: Throwable) {
         }
         return false

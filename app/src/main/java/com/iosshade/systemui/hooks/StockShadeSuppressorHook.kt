@@ -29,11 +29,11 @@ class StockShadeSuppressorHook(private val lpparam: LoadPackageParam) {
     fun install() {
         val targets = listOf(
             "com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout",
-            "com.android.systemui.statusbar.notification.footer.ui.view.FooterView",
-            // Samsung's lock-screen clock/date container (may live in another window -
-            // process-wide hooks catch it regardless of where it is attached).
-            "com.android.systemui.keyguard.ui.view.KeyguardRootView"
+            "com.android.systemui.statusbar.notification.footer.ui.view.FooterView"
         )
+        // NOTE: KeyguardRootView / lock_clock_blur / SecKeyguardStatusView are
+        // deliberately NOT suppressed any more - the module now REVEALS the original
+        // lock screen while the panel is up (see ShadeOverlayController).
         for (name in targets) {
             armVisibility(name)
             armAttach(name)

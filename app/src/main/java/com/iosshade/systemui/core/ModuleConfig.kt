@@ -37,9 +37,9 @@ object ModuleConfig {
 
     /**
      * TEMPORARY diagnostic: on every panel show, dump all process windows and any
-     * clock/keyguard-ish view classes. (Calibration complete: the ghost was
-     * QSClockHeaderView + QSClockPopOverImmersiveView + lock_clock_blur's
-     * SecKeyguardClockContainer - all matched now.)
+     * clock/keyguard-ish view classes, so the ghost lock-clock can be identified
+     * and pinned. Turn off once calibrated. (Calibration complete: the ghost was
+     * QSClockHeaderView + QSClockPopOverImmersiveView, now matched.)
      */
     const val DUMP_WINDOW_VIEWS = false
 }

@@ -4,7 +4,6 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
@@ -22,26 +21,25 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextClock
-import android.widget.TextView
-import com.iosshade.systemui.core.Fonts
 import com.iosshade.systemui.core.Log
 import com.iosshade.systemui.data.NotifModel
 import com.iosshade.systemui.hooks.PanelExpansionHook
 
 /**
- * iOS lock-screen "Notification Center" look (Phase 2.1), matched to the user's
- * reference video:
+ * The notification shade, iOS style, ON THE PLAIN WALLPAPER (no keyguard UI,
+ * no frost). The clock is SAMSUNG'S OWN ("my main" one, the user said): the
+ * controller reveals One UI's shade-clock layer (lock_clock_blur) with its
+ * blur backdrop stripped, and this view draws the notifications under it:
  *
- *   FrameLayout (translucent dark glass - wallpaper stays visible behind)
+ *   FrameLayout (fully transparent - the wallpaper shows through)
  *   ├─ ScrollView
- *   │  └─ LinearLayout (column)
+ *   │  └─ LinearLayout (column, transparent)
  *   │     ├─ clock block:  date (small) + time (huge thin, centered)
- *   │     ├─ header row:   "Notification Center" (left) ... [x] (right)
- *   │     └─ NotifCardView * N   (staggered entrance animation)
- *   └─ bottom row: [flashlight] ..... [camera]  (round glass lock-screen buttons)
+ *   │     └─ NotifCardView * N   (collapsed: newest only; tap it to expand all)
+ *   ├─ bottom row: [flashlight] ..... [camera]  (floating lock-screen buttons)
+ *   └─ glass edge bar (visible ONLY while opening/closing)
  *
  * The clock is a system TextClock (self-updating, zero timers of our own).
- * Tapping the empty scroll area closes the panel, like the video's x button.
  * Every animation degrades to an instant visibility flip if the animator fails.
  */
 class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(context) {
@@ -51,10 +49,18 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     private val cardsColumn = LinearLayout(context)
     private val dateView = TextClock(context)
     private val timeView = TextClock(context)
-    private val titleView = TextView(context)
-    private val closeButton = TextView(context)
+    private val edgeView = FrameLayout(context)
     private var torchButton: FrameLayout? = null
     private var torchOn = false
+
+    /**
+     * Lock-screen behaviour: collapsed shows ONLY the newest notification;
+     * tapping it reveals the full list. Reset on every hide.
+     */
+    private var expanded = false
+
+    /** Last rendered snapshot - reused when the collapsed card expands. */
+    private var lastModels: List<NotifModel> = emptyList()
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -73,12 +79,14 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         clipToPadding = false
         clipChildren = false
 
-        // Clear backdrop: the wallpaper shows through fully (the user asked for
-        // no frost/blur). A whisper of dim is added only while rolling (see
-        // setPanelState) and fades to perfectly clear at full expansion.
+        // Transparent backdrop: the ORIGINAL lock screen (revealed by the
+        // controller) is the background - the wallpaper and Samsung's clock
+        // show straight through. Nothing frosted, nothing solid.
         setBackgroundColor(0x00000000)
 
-        scroll.isFillViewport = true
+        // NOT fill-viewport: the sheet must wrap its content so the bottom edge
+        // sits right below the notifications - the visible end of the shade.
+        scroll.isFillViewport = false
         scroll.overScrollMode = ScrollView.OVER_SCROLL_NEVER
         scroll.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
         scroll.addView(column, ViewGroupLayoutParams())
@@ -107,6 +115,12 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                             userDragging = true
                             column.translationY = dy * 0.85f
                             column.alpha = (1f + dy / dp(300)).coerceIn(0.25f, 1f)
+                            // While pushing the panel up, the edge chases the
+                            // content's bottom - the shade is clearly "ending" there.
+                            edgeView.animate().cancel()
+                            edgeView.alpha = 1f
+                            edgeView.translationY =
+                                (column.bottom + column.translationY).coerceAtLeast(dp(60).toFloat())
                         } else if (dy > 0) {
                             userDragging = false
                         }
@@ -120,6 +134,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                             if (dy < -dp(80)) {
                                 closePanel()
                             } else {
+                                fadeEdgeOut()
                                 column.animate().cancel()
                                 column.animate()
                                     .translationY(0f)
@@ -139,23 +154,25 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             }
         }
 
+        // Transparent column: cards float directly over the plain wallpaper.
         column.orientation = LinearLayout.VERTICAL
-        column.setPadding(0, 0, 0, dp(24))
+        column.setPadding(dp(16), 0, dp(16), dp(16))
 
         buildClock()
-        buildHeader()
 
         // Dedicated container for notification cards: render() only ever touches
-        // this child, so clock/header indices can never be disturbed.
+        // this child, so nothing else in the hierarchy can ever be disturbed.
         cardsColumn.orientation = LinearLayout.VERTICAL
-        // Extra bottom padding so the last card never hides under the lock buttons.
-        cardsColumn.setPadding(0, 0, 0, dp(84))
         column.addView(
             cardsColumn,
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(20) }
         )
 
         buildLockButtons()
+        buildEdge()
 
         // Default: inert. The controller toggles clickable only while visible.
         isClickable = false
@@ -164,7 +181,46 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     }
 
     // ------------------------------------------------------------------
-    // Clock block (iOS lock screen style)
+    // The shade edge: a rounded GLASS bar (translucent gradient + hairline
+    // rim) that marks where the shade ENDS. It rides the bottom of the
+    // shade region and is visible ONLY while the shade is moving
+    // (opening/closing) - it fades out the moment the panel settles.
+    // ------------------------------------------------------------------
+    private fun buildEdge() {
+        try {
+            edgeView.isClickable = false
+            edgeView.isFocusable = false
+            edgeView.alpha = 0f
+
+            val glass = View(context).apply {
+                background = GradientDrawable().apply {
+                    orientation = GradientDrawable.Orientation.TOP_BOTTOM
+                    cornerRadius = dp(15).toFloat()
+                    colors = if (isNight()) {
+                        intArrayOf(0x8CFFFFFF.toInt(), 0x40FFFFFF)
+                    } else {
+                        intArrayOf(0x99FFFFFF.toInt(), 0x59FFFFFF)
+                    }
+                    setStroke(dp(1), 0x8CFFFFFF.toInt())
+                }
+            }
+            edgeView.addView(
+                glass,
+                LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+            )
+
+            val lp = LayoutParams(LayoutParams.MATCH_PARENT, dp(30))
+            lp.leftMargin = dp(56)
+            lp.rightMargin = dp(56)
+            addView(edgeView, lp)
+        } catch (t: Throwable) {
+            Log.e("buildEdge failed", t)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Clock block - the user's "main" clock style: BIG white time + date,
+    // system font (NOT the iOS/SF-Pro thin clock). Self-updating TextClocks.
     // ------------------------------------------------------------------
     private fun buildClock() {
         try {
@@ -174,23 +230,25 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             }
 
             dateView.apply {
-                // "Tue Oct 7" like the reference video (locale-aware).
-                format12Hour = "EEE MMM d"
-                format24Hour = "EEE MMM d"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
-                setTextColor(if (isNight()) 0xE6FFFFFF.toInt() else 0xCC000000.toInt())
-                typeface = Fonts.regular(context)
+                format12Hour = "EEE, MMM d"
+                format24Hour = "EEE, MMM d"
+                isAllCaps = true
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                setTextColor(0xE6FFFFFF.toInt())
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
                 includeFontPadding = false
+                setShadowLayer(dp(6).toFloat(), 0f, dp(2).toFloat(), 0x80000000.toInt())
             }
             timeView.apply {
                 format12Hour = "h:mm"
                 format24Hour = "HH:mm"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 88f)
-                setTextColor(if (isNight()) 0xF2FFFFFF.toInt() else 0xF0000000.toInt())
-                typeface = Fonts.light(context)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 96f)
+                setTextColor(0xFFFFFFFF.toInt())
+                typeface = android.graphics.Typeface.DEFAULT
                 gravity = Gravity.CENTER
                 includeFontPadding = false
+                setShadowLayer(dp(8).toFloat(), 0f, dp(2).toFloat(), 0x80000000.toInt())
             }
 
             clockBlock.addView(
@@ -206,7 +264,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             column.addView(
                 clockBlock,
                 LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                    .apply { topMargin = dp(14); bottomMargin = dp(20) }
+                    .apply { topMargin = dp(12); bottomMargin = dp(8) }
             )
         } catch (t: Throwable) {
             Log.e("buildClock failed", t)
@@ -214,73 +272,35 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     }
 
     // ------------------------------------------------------------------
-    // Header: left-aligned title + right x (like the video)
-    // ------------------------------------------------------------------
-    private fun buildHeader() {
-        try {
-            val row = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-
-            titleView.text = "Notification Center"
-            titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 21f)
-            titleView.typeface = Fonts.semiBold(context)
-            titleView.setTextColor(if (isNight()) 0xFFFFFFFF.toInt() else 0xFF000000.toInt())
-            titleView.maxLines = 1
-
-            closeButton.text = "×"
-            closeButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
-            closeButton.setTextColor(if (isNight()) 0xD9FFFFFF.toInt() else 0xB3000000.toInt())
-            closeButton.typeface = Fonts.light(context)
-            closeButton.setPadding(dp(14), dp(4), dp(14), dp(10))
-            closeButton.setOnClickListener { closePanel() }
-
-            row.addView(
-                titleView,
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            )
-            row.addView(closeButton)
-
-            column.addView(
-                row,
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                    .apply { bottomMargin = dp(16) }
-            )
-        } catch (t: Throwable) {
-            Log.e("buildHeader failed", t)
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Bottom lock-screen buttons: flashlight + camera
+    // Bottom lock-screen buttons: flashlight + camera. They FLOAT at the
+    // bottom of the revealed lock screen (over the wallpaper), like the
+    // original lock-screen design - not inside the notification column.
     // ------------------------------------------------------------------
     private fun buildLockButtons() {
         try {
-            val row = FrameLayout(context)
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
 
             val torch = circleButton(GlyphView(context, GlyphView.KIND_FLASH, iconColor()))
             torch.setOnClickListener { toggleTorch() }
             torchButton = torch
 
             val camera = circleButton(GlyphView(context, GlyphView.KIND_CAMERA, iconColor()))
+
             camera.setOnClickListener { openCamera() }
 
-            val size = LayoutParams(dp(52), dp(52))
-            row.addView(
-                torch,
-                FrameLayout.LayoutParams(dp(52), dp(52), Gravity.BOTTOM or Gravity.START)
-                    .apply { leftMargin = dp(44); bottomMargin = dp(8) }
-            )
+            row.addView(torch, LinearLayout.LayoutParams(dp(52), dp(52)))
             row.addView(
                 camera,
-                FrameLayout.LayoutParams(dp(52), dp(52), Gravity.BOTTOM or Gravity.END)
-                    .apply { rightMargin = dp(44); bottomMargin = dp(8) }
+                LinearLayout.LayoutParams(dp(52), dp(52)).apply { leftMargin = dp(140) }
             )
 
             addView(
                 row,
                 LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+                    .apply { bottomMargin = dp(34) }
             )
         } catch (t: Throwable) {
             Log.e("buildLockButtons failed", t)
@@ -291,7 +311,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         return FrameLayout(context).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(0x47FFFFFF)
+                setColor(if (isNight()) 0x33FFFFFF else 0x1A000000)
             }
             val pad = dp(13)
             setPadding(pad, pad, pad, pad)
@@ -362,19 +382,25 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     // ------------------------------------------------------------------
 
     /**
-     * Rebuilds the card list. Returns true when there is content to display
-     * (the controller uses this to fall back to the stock shade when empty).
+     * Lock-screen behaviour: when collapsed (default after every hide) only the
+     * NEWEST notification is on the sheet - tapping it reveals the whole list
+     * (staggered entrance). Expanded, cards open their apps as usual.
      *
-     * @param animateIn when true, cards play a staggered slide-up + fade entrance
-     *                  (used when the panel itself is appearing).
+     * Returns true when there is content to display (the controller uses this
+     * to fall back to the stock shade when empty).
      */
     fun render(models: List<NotifModel>, animateIn: Boolean): Boolean {
         return try {
+            lastModels = models
             cardsColumn.removeAllViews()
             if (models.isEmpty()) return false
 
-            models.forEachIndexed { index, model ->
-                val card = NotifCardView(context, model)
+            val newest = models.maxByOrNull { it.timeMillis } ?: models.first()
+            val visible = if (expanded) models else listOf(newest)
+
+            val tapOverride: (() -> Unit)? = if (!expanded) ({ expandAll() }) else null
+            visible.forEachIndexed { index, model ->
+                val card = NotifCardView(context, model, tapOverride)
                 cardsColumn.addView(card)
                 if (animateIn) playCardEntrance(card, index)
             }
@@ -385,6 +411,12 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             Log.e("render failed", t)
             false
         }
+    }
+
+    /** Tap on the newest notification while collapsed: reveal everything. */
+    private fun expandAll() {
+        expanded = true
+        render(lastModels, animateIn = true)
     }
 
     /** iOS-style card entrance: fade + slide up + slight spring-settle, staggered. */
@@ -424,6 +456,8 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             column.animate().cancel()
             userDragging = false
             pivotY = 0f
+            edgeView.animate().cancel()
+            edgeView.alpha = 0f
             alpha = 0f
             translationY = dp(-48).toFloat()
             scaleX = 0.985f
@@ -459,10 +493,14 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                     translationY = 0f
                     scaleX = 1f
                     scaleY = 1f
-                    // Reset the finger-follow transform so the next show starts clean.
+                    // Reset the finger-follow transform and the collapsed state so
+                    // the next open starts clean: sheet up, newest-notification-only.
                     column.translationY = 0f
                     column.alpha = 1f
                     userDragging = false
+                    expanded = false
+                    edgeView.animate().cancel()
+                    edgeView.alpha = 0f
                     onDone()
                 }
             }
@@ -483,6 +521,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             visibility = GONE
             alpha = 1f
             translationY = 0f
+            edgeView.alpha = 0f
             onDone()
         }
     }
@@ -504,10 +543,13 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     }
 
     /**
-     * The signature iOS move: while the panel is pulled down the content
-     * physically FOLLOWS THE FINGER (slides in from behind the status bar,
-     * fading up), like the lock-screen swipe. The backdrop itself stays clear
-     * - the wallpaper is always visible, no frost/blur.
+     * The signature iOS move: while the panel is pulled down the cards
+     * physically FOLLOW THE FINGER (slide in from behind the status bar,
+     * fading up). The background is the revealed ORIGINAL lock screen.
+     *
+     * The shade edge rides the bottom of the shade region (fraction x height)
+     * and shows ONLY while the shade is moving: gone when fully open, gone
+     * when fully closed, crisp during the gesture.
      */
     fun setPanelState(fraction: Float, onKeyguard: Boolean) {
         try {
@@ -517,9 +559,28 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 column.translationY = -(1f - t) * dp(150)
                 column.alpha = 0.3f + 0.7f * t
             }
-            // Whisper of dim while rolling, perfectly clear when fully down.
-            val alpha = (0x30 + ((0x00 - 0x30) * t).toInt()).coerceIn(0, 255)
-            setBackgroundColor(alpha shl 24)
+            // Edge: position at the bottom of the shade region...
+            val h = if (height > 0) height else resources.displayMetrics.heightPixels
+            edgeView.translationY = (f * h - edgeView.height).coerceAtLeast(0f)
+            // ...and visible only mid-gesture (opening or closing).
+            val moving = f >= 0.05f && f <= 0.965f
+            if (moving) {
+                if (edgeView.alpha < 1f) {
+                    edgeView.animate().cancel()
+                    edgeView.alpha = 1f
+                }
+            } else if (edgeView.alpha > 0f) {
+                fadeEdgeOut()
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Smoothly fades the shade edge out (used when the panel settles). */
+    private fun fadeEdgeOut() {
+        try {
+            edgeView.animate().cancel()
+            edgeView.animate().alpha(0f).setDuration(160L).start()
         } catch (_: Throwable) {
         }
     }

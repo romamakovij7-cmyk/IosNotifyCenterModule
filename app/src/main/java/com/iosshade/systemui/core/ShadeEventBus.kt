@@ -41,6 +41,14 @@ object ShadeEventBus {
     var lastState: Int = STATE_SHADE
         private set
 
+    /**
+     * True while the user's finger started the pull on the RIGHT side of the
+     * screen (= One UI Control Center / quick settings). Set by the touch hook;
+     * our custom notification panel must stay OUT of the way then.
+     */
+    @Volatile
+    var controlCenterGesture: Boolean = false
+
     fun register(listener: Listener) {
         listeners.addIfAbsent(listener)
     }
