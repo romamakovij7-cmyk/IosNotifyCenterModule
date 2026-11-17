@@ -523,9 +523,6 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         }
     }
 
-    /** True while finger tracking or a settle animation still owns the panel. */
-    fun isMotionActive(): Boolean = motion.isMotionActive()
-
     /** Cancels any in-flight hide so a fast re-open never snaps back to GONE. */
     fun cancelHideAnimation() {
         try {
@@ -627,24 +624,6 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             column.setPadding(dp(16), safe.top + dp(4), dp(16), dp(16) + safe.bottom)
         } catch (t: Throwable) {
             Log.e("applyWindowInsets failed", t)
-        }
-    }
-
-    /**
-     * Gesture bridge for OPENING: track the finger 1:1 but DON'T drive stock.
-     * Samsung expands its own panel; we only follow with our overlay, so there
-     * is no feedback loop and no 1.0 jump.
-     */
-    fun onGestureTouch(ev: android.view.MotionEvent) {
-        try {
-            motion.driveStock = false
-            motion.onTouch(ev)
-            if (ev.actionMasked == android.view.MotionEvent.ACTION_UP ||
-                ev.actionMasked == android.view.MotionEvent.ACTION_CANCEL
-            ) {
-                motion.driveStock = true
-            }
-        } catch (_: Throwable) {
         }
     }
 

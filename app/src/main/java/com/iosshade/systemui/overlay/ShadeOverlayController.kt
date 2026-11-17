@@ -230,11 +230,15 @@ object ShadeOverlayController : ShadeEventBus.Listener {
 
             val onKeyguard = state != ShadeEventBus.STATE_SHADE
             keyguard = onKeyguard
-            // While our gesture physics is driving (finger down or settling),
-            // the stock fraction we echo back through requestSetFraction must
-            // NOT be allowed to hide us - otherwise the stock panel flashes in
-            // during the handoff. Our motion owns the decision until it settles.
-            if (overlay.isMotionActive()) return
+
+            // EARLY suppression: hide the stock stack from the first pixel of
+            // the pull (before our overlay is visible). Otherwise Samsung's stock
+            // shade is visible and "pops up" during the handoff.
+            if (!onKeyguard && fraction > 0.01f && hiddenStock.isEmpty()) {
+                hideStockStack()
+            } else if (fraction <= 0.001f && hiddenStock.isNotEmpty() && !shown) {
+                restoreStockStack()
+            }
 
             // Hysteresis: while shown, only a real collapse (fraction under the
             // lower threshold) hides us - One UI's settle bounce hovers just
@@ -528,18 +532,6 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         return false
     }
 
-    /**
-     * Bridge from the shade-window touch hook for the OPEN gesture. Tracks the
-     * finger 1:1 WITHOUT writing fraction back into Samsung (driveStock=false),
-     * so there is no feedback loop and no 1.0 jump - just smooth open that feels
-     * exactly like the close gesture.
-     */
-    fun onShadeTouch(ev: android.view.MotionEvent) {
-        try {
-            overlayRef?.get()?.onGestureTouch(ev)
-        } catch (_: Throwable) {
-        }
-    }
     /**
      * The user wants the ORIGINAL Samsung lock-screen clock. One UI's shade
      * clock layer (lock_clock_blur -> SecKeyguardStatusView -> SecKeyguardClock
