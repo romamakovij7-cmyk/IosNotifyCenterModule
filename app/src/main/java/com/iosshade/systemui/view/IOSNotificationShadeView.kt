@@ -634,6 +634,15 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
      * driving, motion ignores these (it is authoritative); otherwise it mirrors
      * Samsung so a pull started on the status bar still opens our panel.
      */
+    /** Called when the finger is released: hand the exact position to ShadeMotion. */
+    fun onFingerRelease(offsetPx: Float) {
+        try {
+            val h = resources.displayMetrics.heightPixels
+            motion.adoptAndSettle(offsetPx / h)
+        } catch (_: Throwable) {
+        }
+    }
+
     fun setPanelState(fraction: Float, onKeyguard: Boolean) {
         val tracker = com.iosshade.systemui.core.FingerTracker
         if (tracker.active && tracker.offsetPx > 0f) {
@@ -658,15 +667,12 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         try {
             val h = if (height > 0) height else resources.displayMetrics.heightPixels
 
-            // Sheet follows the FINGER 1:1. While dragging DOWN, offsetPx is the
-            // exact rawY distance from the touch start - no One UI fraction math,
-            // no acceleration. When not dragging, use the stock expansion so the
-            // settle/fling still lands correctly.
+            // While the finger is DOWN, use its exact raw pixel offset (1:1).
+            // Once released, use motion's expansion - it adopts the release
+            // position and runs the settle animation to fully open/closed.
             val tracker = com.iosshade.systemui.core.FingerTracker
             val f = if (tracker.active && tracker.offsetPx > 0f) {
                 tracker.offsetPx
-            } else if (com.iosshade.systemui.core.ShadeEventBus.lastExpandedHeightPx >= 0f) {
-                com.iosshade.systemui.core.ShadeEventBus.lastExpandedHeightPx
             } else {
                 expansion * h
             }

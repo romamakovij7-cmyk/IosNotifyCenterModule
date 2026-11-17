@@ -532,6 +532,14 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         return false
     }
 
+    /** Forward a finger release to the overlay so the sheet settles instead of sticking. */
+    fun onFingerRelease(offsetPx: Float) {
+        try {
+            overlayRef?.get()?.onFingerRelease(offsetPx)
+        } catch (_: Throwable) {
+        }
+    }
+
     /**
      * The user wants the ORIGINAL Samsung lock-screen clock. One UI's shade
      * clock layer (lock_clock_blur -> SecKeyguardStatusView -> SecKeyguardClock

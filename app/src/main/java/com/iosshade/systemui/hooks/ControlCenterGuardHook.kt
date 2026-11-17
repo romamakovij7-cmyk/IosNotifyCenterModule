@@ -58,6 +58,16 @@ class ControlCenterGuardHook(private val lpparam: LoadPackageParam) {
                                         com.iosshade.systemui.core.FingerTracker.move(ev.rawY)
                                     }
                                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                        // Hand the exact finger position to motion so
+                                        // the sheet SETTLES (open/close) instead of
+                                        // sticking halfway on release.
+                                        if (ev.actionMasked == MotionEvent.ACTION_UP &&
+                                            com.iosshade.systemui.core.FingerTracker.active
+                                        ) {
+                                            ShadeOverlayController.onFingerRelease(
+                                                com.iosshade.systemui.core.FingerTracker.offsetPx
+                                            )
+                                        }
                                         com.iosshade.systemui.core.FingerTracker.up()
                                         if (ShadeEventBus.lastFraction < 0.1f) {
                                             ShadeEventBus.controlCenterGesture = false

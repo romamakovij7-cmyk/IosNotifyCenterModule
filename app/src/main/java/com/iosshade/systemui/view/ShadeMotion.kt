@@ -128,6 +128,17 @@ class ShadeMotion(context: Context, private val host: Host) {
         }
     }
 
+    /**
+     * Called when the finger is released after a raw-pixel drag: adopt the
+     * current visual position as our expansion, then settle to the nearest
+     * stable state (fully open / fully closed) with velocity-aware physics.
+     */
+    fun adoptAndSettle(value: Float) {
+        cancelSettling()
+        setExpansion(value.coerceIn(0f, 1f), 0f, tracking = false)
+        decideAndSettle()
+    }
+
     /** Mirrors the stock panel's expansion while we are NOT driving it. */
     fun onExternalFraction(fraction: Float) {
         if (isTracking || settling != null) return
