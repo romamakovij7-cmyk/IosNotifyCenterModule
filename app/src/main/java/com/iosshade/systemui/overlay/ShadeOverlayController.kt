@@ -424,7 +424,11 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                     restoreStockStack()
                     restoreClockLayers()
                     hiding = false
-                    Log.i("Stock restored after confirmed collapse")
+                    // Real Samsung lock-screen unlock animation after close.
+                    if (!keyguard) {
+                        com.iosshade.systemui.hooks.UnlockAnimationHook.playUnlockAnimation()
+                    }
+                    Log.i("Stock restored; unlock animation requested")
                 } catch (t: Throwable) {
                     restoreRunnable = null
                     shown = false
