@@ -354,7 +354,9 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 LinearLayout.LayoutParams(dp(52), dp(52)).apply { leftMargin = dp(140) }
             )
 
-            sheet.addView(
+            // Buttons are pinned to the ROOT bottom (not the dynamic-height
+            // sheet), so they never overlap the notification card.
+            addView(
                 row,
                 LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
                     .apply { bottomMargin = dp(34) }
@@ -633,7 +635,14 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
      * Samsung so a pull started on the status bar still opens our panel.
      */
     fun setPanelState(fraction: Float, onKeyguard: Boolean) {
-        motion.onExternalFraction(fraction)
+        val tracker = com.iosshade.systemui.core.FingerTracker
+        if (tracker.active && tracker.offsetPx > 0f) {
+            // Finger is dragging -> apply the EXACT raw pixel offset now,
+            // bypassing motion's fraction smoothing entirely.
+            applyExpansion(tracker.offsetPx / resources.displayMetrics.heightPixels, 0f, true)
+        } else {
+            motion.onExternalFraction(fraction)
+        }
     }
 
     /**
@@ -649,25 +658,28 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         try {
             val h = if (height > 0) height else resources.displayMetrics.heightPixels
 
-            // Translate so the sheet's bottom edge follows the finger 1:1.
-            // Use the REAL expanded height (px) when available - fraction*screenHeight
-            // over-shoots because One UI's maxPanelHeight < screen height.
-            val stockPx = com.iosshade.systemui.core.ShadeEventBus.lastExpandedHeightPx
-            val sheetY = if (stockPx >= 0f && h > 0) {
-                -(h - stockPx.coerceIn(0f, h.toFloat()))
+            // Sheet follows the FINGER 1:1. While dragging DOWN, offsetPx is the
+            // exact rawY distance from the touch start - no One UI fraction math,
+            // no acceleration. When not dragging, use the stock expansion so the
+            // settle/fling still lands correctly.
+            val tracker = com.iosshade.systemui.core.FingerTracker
+            val f = if (tracker.active && tracker.offsetPx > 0f) {
+                tracker.offsetPx
+            } else if (com.iosshade.systemui.core.ShadeEventBus.lastExpandedHeightPx >= 0f) {
+                com.iosshade.systemui.core.ShadeEventBus.lastExpandedHeightPx
             } else {
-                -(1f - expansion) * h
+                expansion * h
             }
-            sheet.translationY = sheetY
+            // Sheet is full-screen; slide it down from above by (h - offset).
+            sheet.translationY = -(h - f.coerceIn(0f, h.toFloat()))
 
             // Cards: extra small stagger inside the moving sheet.
             column.translationY = -(1f - expansion) * dp(60)
             column.alpha = 0.55f + 0.45f * expansion
 
-            // Clock sits slightly higher than the cards (depth-effect clearance).
-            clockLayer?.get()?.let { it.translationY = -dp(42).toFloat() }
-
             // Clock scaling: grows subtly as the sheet settles (iOS proportions).
+            // Translation is NOT set here - the clock is inside `sheet`, so it
+            // inherits the sheet's 1:1 finger motion automatically.
             clockLayer?.get()?.let { clock ->
                 clock.pivotX = clock.width / 2f
                 clock.pivotY = clock.height * 0.28f

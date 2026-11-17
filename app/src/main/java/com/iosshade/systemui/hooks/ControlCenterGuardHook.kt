@@ -45,8 +45,8 @@ class ControlCenterGuardHook(private val lpparam: LoadPackageParam) {
                                 if (width <= 0) return
                                 when (ev.actionMasked) {
                                     MotionEvent.ACTION_DOWN -> {
-                                        // Right side = Control Center gesture. Reset on
-                                        // EVERY down so no stale flag leaks.
+                                        // Track raw finger Y for 1:1 sheet motion.
+                                        com.iosshade.systemui.core.FingerTracker.down(ev.rawY)
                                         ShadeEventBus.controlCenterGesture = ev.rawX >= width * 0.6f
                                         if (ShadeEventBus.controlCenterGesture &&
                                             ShadeEventBus.lastFraction < 0.1f
@@ -54,7 +54,11 @@ class ControlCenterGuardHook(private val lpparam: LoadPackageParam) {
                                             ShadeOverlayController.forceHide()
                                         }
                                     }
+                                    MotionEvent.ACTION_MOVE -> {
+                                        com.iosshade.systemui.core.FingerTracker.move(ev.rawY)
+                                    }
                                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                        com.iosshade.systemui.core.FingerTracker.up()
                                         if (ShadeEventBus.lastFraction < 0.1f) {
                                             ShadeEventBus.controlCenterGesture = false
                                         }
