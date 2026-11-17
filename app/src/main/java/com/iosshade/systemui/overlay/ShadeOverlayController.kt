@@ -424,7 +424,9 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                     restoreStockStack()
                     restoreClockLayers()
                     hiding = false
-                    Log.i("Stock restored after confirmed collapse")
+                    // Unlock signal: panel is swiped up and collapse is complete.
+                    com.iosshade.systemui.hooks.UnlockAnimationHook.requestUnlockAnimation()
+                    Log.i("Stock restored after confirmed collapse; unlock signal sent")
                 } catch (t: Throwable) {
                     restoreRunnable = null
                     shown = false
