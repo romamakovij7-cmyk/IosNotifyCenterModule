@@ -39,6 +39,41 @@ import java.util.WeakHashMap
  */
 class NotificationSourceHook(private val lpparam: LoadPackageParam) {
 
+    companion object {
+        /**
+         * Dismiss a notification by its key. Uses NotificationPresenter / the
+         * collection's dismiss API on the main thread; fully best-effort.
+         * Also removes it from our local mirror immediately for snappy UI.
+         */
+        @JvmStatic
+        fun dismiss(key: String) {
+            // Local mirror first so the card disappears instantly.
+            NotifCollector.remove(key)
+            try {
+                val entry = sEntryByKey[key]?.get()
+                if (entry == null) {
+                    Log.w("dismiss: no live entry for key=$key")
+                    return
+                }
+                val collection = sCollectionRef?.get() ?: return
+                val done = SafeXposed.callMethodSafe(
+                    collection, "dismissNotification", entry, "dismiss"
+                ) ?: SafeXposed.callMethodSafe(
+                    collection, "dismissNotification", entry
+                )
+                Log.i("dismiss($key): invoked=$done")
+            } catch (t: Throwable) {
+                Log.e("dismiss failed", t)
+            }
+        }
+
+        @Volatile private var sCollectionRef: WeakReference<Any>? = null
+        private val sEntryByKey = java.util.concurrent.ConcurrentHashMap<String, WeakReference<Any>>()
+        fun remember(key: String, entry: Any?) {
+            if (entry != null) sEntryByKey[key] = WeakReference(entry)
+        }
+    }
+
     private val loader: ClassLoader get() = lpparam.classLoader
 
     /** Instances we already attached a proxy listener to (weak, identity-based). */
@@ -46,10 +81,6 @@ class NotificationSourceHook(private val lpparam: LoadPackageParam) {
         Collections.newSetFromMap(WeakHashMap())
 
     private val mainHandler = Handler(Looper.getMainLooper())
-
-    /** Weak ref to the NotifCollection instance for the fallback scrape. */
-    @Volatile
-    private var collectionRef: WeakReference<Any>? = null
 
     @Volatile
     private var refreshPending = false
@@ -77,7 +108,7 @@ class NotificationSourceHook(private val lpparam: LoadPackageParam) {
             XposedBridge.hookAllConstructors(collectionClass, object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
                     try {
-                        collectionRef = WeakReference(param.thisObject)
+                        sCollectionRef = WeakReference(param.thisObject)
                         registerProxyListener(param.thisObject)
                     } catch (t: Throwable) {
                         Log.e("NotifCollection ctor hook body failed", t)
@@ -120,7 +151,9 @@ class NotificationSourceHook(private val lpparam: LoadPackageParam) {
 
                     "onEntryAdded", "onEntryUpdated", "onEntryInit", "onEntryBind" -> {
                         NotifCollector.markProxyActive()
-                        NotifCollector.putFromEntry(args?.getOrNull(0), SbnUtil.systemUiContext())
+                        val entry = args?.getOrNull(0)
+                        SbnUtil.keyOf(entry)?.let { remember(it, entry) }
+                        NotifCollector.putFromEntry(entry, SbnUtil.systemUiContext())
                     }
                     "onEntryRemoved", "onEntryCleanUp" -> {
                         NotifCollector.markProxyActive()
@@ -201,7 +234,7 @@ class NotificationSourceHook(private val lpparam: LoadPackageParam) {
     private fun refreshFromCollection() {
         if (NotifCollector.proxyActive) return // proxy path owns the data now
         try {
-            val collection = collectionRef?.get() ?: return
+            val collection = sCollectionRef?.get() ?: return
             // One UI 9: public final Map mNotificationSet (ArrayMap<String, NotificationEntry>).
             val fieldValue = SafeXposed.findFieldValue(
                 collection,

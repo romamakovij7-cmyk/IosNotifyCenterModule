@@ -53,6 +53,54 @@ class NotifCardView(
             addView(buildIcon())
             addView(buildTextColumn())
             setOnClickListener { onTapOverride?.invoke() ?: open() }
+
+            // iOS-style swipe-up to dismiss: the card follows the finger and,
+            // once released past a threshold, flies away and is dismissed.
+            var downY = 0f
+            var dismissing = false
+            setOnTouchListener { v, ev ->
+                try {
+                    when (ev.actionMasked) {
+                        android.view.MotionEvent.ACTION_DOWN -> {
+                            downY = ev.rawY
+                            false
+                        }
+                        android.view.MotionEvent.ACTION_MOVE -> {
+                            val dy = ev.rawY - downY
+                            if (dy < 0) {
+                                v.translationY = dy * 0.7f
+                                v.alpha = (1f + dy / dp(240)).coerceIn(0.35f, 1f)
+                            }
+                            false
+                        }
+                        android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                            val dy = ev.rawY - downY
+                            if (dy < -dp(70) && ev.actionMasked != android.view.MotionEvent.ACTION_CANCEL) {
+                                dismissing = true
+                                v.animate()
+                                    .translationY(-dp(300).toFloat())
+                                    .alpha(0f)
+                                    .setDuration(160L)
+                                    .withEndAction {
+                                        try {
+                                            com.iosshade.systemui.hooks.NotificationSourceHook
+                                                .dismiss(model.key)
+                                        } catch (_: Throwable) {
+                                        }
+                                    }
+                                    .start()
+                                true
+                            } else {
+                                v.animate().translationY(0f).alpha(1f).setDuration(140L).start()
+                                false
+                            }
+                        }
+                        else -> false
+                    }
+                } catch (_: Throwable) {
+                    false
+                }
+            }
         } catch (t: Throwable) {
             Log.e("NotifCardView init failed for ${model.packageName}", t)
         }

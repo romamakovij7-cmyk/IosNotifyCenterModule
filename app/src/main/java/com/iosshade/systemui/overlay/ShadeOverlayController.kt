@@ -625,15 +625,8 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             collectClockLayers(layer, 0)
 
             parent.removeView(layer)
-            // Index 1 = above our wallpaper (0), below cards/buttons/edge.
-            overlay.addView(
-                layer,
-                1.coerceAtMost(overlay.childCount),
-                layer.layoutParams ?: ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-            )
+            // Insert inside the clipped sheet: above wallpaper, below cards.
+            overlay.addClockLayer(layer)
             movedClockLayer = MovedClockLayer(WeakReference(layer), WeakReference(parent), index)
 
             for (entry in clockLayers) {

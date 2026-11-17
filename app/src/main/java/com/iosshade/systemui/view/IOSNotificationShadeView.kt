@@ -46,6 +46,8 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     private val cardsColumn = LinearLayout(context)
     private val wallpaper = android.widget.ImageView(context)
     private val edgeView = FrameLayout(context)
+    /** The sheet itself: clipped to a rounded-bottom shape (the visible end). */
+    private val sheet = FrameLayout(context)
     private var blurredWallpaper: android.graphics.Bitmap? = null
     private var torchButton: FrameLayout? = null
     private var torchOn = false
@@ -91,12 +93,41 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         clipToPadding = false
         clipChildren = false
 
-        // The real wallpaper as our background: One UI blurs the home screen
-        // behind the shade, so we draw the SHARP wallpaper ourselves. This
-        // also hides the home-screen date widget ("ghost date").
+        // The SHEET container: everything that belongs to the notification
+        // center lives inside it. A rounded-bottom outline clips the wallpaper,
+        // clock, cards and buttons so the whole sheet ends in a crisp round edge.
+        try {
+            sheet.clipToPadding = false
+            sheet.clipChildren = true
+            sheet.outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) {
+                    val w = view.width
+                    val h = view.height
+                    if (w <= 0 || h <= 0) return
+                    val r = dp(38).toFloat()
+                    // Rounded BOTTOM corners only, square at the top (status bar).
+                    val path = android.graphics.Path().apply {
+                        moveTo(0f, 0f)
+                        lineTo(w.toFloat(), 0f)
+                        lineTo(w.toFloat(), h - r)
+                        quadTo(w.toFloat(), h.toFloat(), w - r, h.toFloat())
+                        lineTo(r, h.toFloat())
+                        quadTo(0f, h.toFloat(), 0f, h - r)
+                        close()
+                    }
+                    outline.setPath(path)
+                }
+            }
+            sheet.clipToOutline = true
+            addView(sheet, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        } catch (t: Throwable) {
+            Log.e("sheet init failed", t)
+        }
+
+        // The real wallpaper as the sheet's background.
         try {
             wallpaper.scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
-            addView(wallpaper, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+            sheet.addView(wallpaper, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         } catch (t: Throwable) {
             Log.e("wallpaper init failed", t)
         }
@@ -110,9 +141,12 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         // sits right below the notifications - the visible end of the shade.
         scroll.isFillViewport = false
         scroll.overScrollMode = ScrollView.OVER_SCROLL_NEVER
+        // No visible scrollbar - iOS-style clean scrolling.
+        scroll.isVerticalScrollBarEnabled = false
+        scroll.isHorizontalScrollBarEnabled = false
         scroll.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
         scroll.addView(column, ViewGroupLayoutParams())
-        addView(scroll)
+        sheet.addView(scroll)
 
         // Tap on empty area = close (children like cards and the x keep their own taps).
         scroll.isClickable = true
@@ -182,7 +216,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
 
             val lp = LayoutParams(dp(160), dp(6))
             lp.leftMargin = (resources.displayMetrics.widthPixels - dp(160)) / 2
-            addView(edgeView, lp)
+            sheet.addView(edgeView, lp)
         } catch (t: Throwable) {
             Log.e("buildEdge failed", t)
         }
@@ -308,7 +342,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 LinearLayout.LayoutParams(dp(52), dp(52)).apply { leftMargin = dp(140) }
             )
 
-            addView(
+            sheet.addView(
                 row,
                 LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
                     .apply { bottomMargin = dp(34) }
@@ -575,18 +609,9 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 WindowInsets.Type.navigationBars() or
                 WindowInsets.Type.displayCutout()
             val safe = insets.getInsets(mask)
-            setPadding(dp(14), safe.top + dp(4), dp(14), safe.bottom + dp(4))
-            // The wallpaper must cover the WHOLE screen, including the areas
-            // behind the status/nav bars - cancel the root padding for it.
-            try {
-                val lp = wallpaper.layoutParams as? LayoutParams ?: return
-                lp.leftMargin = -paddingLeft
-                lp.topMargin = -paddingTop
-                lp.rightMargin = -paddingRight
-                lp.bottomMargin = -paddingBottom
-                wallpaper.layoutParams = lp
-            } catch (_: Throwable) {
-            }
+            // Padding goes on the INNER content column, not the root: the sheet
+            // must cover the whole screen so its rounded bottom clip is exact.
+            column.setPadding(dp(16), safe.top + dp(4), dp(16), dp(16) + safe.bottom)
         } catch (t: Throwable) {
             Log.e("applyWindowInsets failed", t)
         }
@@ -665,6 +690,21 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         if (view == null) return
         mainHandler.removeCallbacks(recolorClockTick)
         mainHandler.postDelayed(recolorClockTick, 90)
+    }
+
+    /** Inserts the reparented clock layer INSIDE the clipped sheet, above wallpaper. */
+    fun addClockLayer(layer: View) {
+        try {
+            sheet.addView(
+                layer,
+                1.coerceAtMost(sheet.childCount),
+                layer.layoutParams ?: LayoutParams(
+                    LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT
+                )
+            )
+        } catch (t: Throwable) {
+            Log.e("addClockLayer failed", t)
+        }
     }
 
     /** Called by the controller when it reparents Samsung's clock layer in/out. */
