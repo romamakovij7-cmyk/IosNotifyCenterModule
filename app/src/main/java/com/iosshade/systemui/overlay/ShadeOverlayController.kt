@@ -281,7 +281,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                     overlay.isFocusable = false
                     restoreStockStack()
                     restoreClockLayers()
-                    return
+                            return
                 }
             }
 
@@ -469,7 +469,10 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 n.contains("carrier", ignoreCase = true) ||
                 n.contains("blur", ignoreCase = true) ||
                 n.contains("scrim", ignoreCase = true) ||
-                n.contains("dim", ignoreCase = true)
+                n.contains("dim", ignoreCase = true) ||
+                n.contains("battery", ignoreCase = true) ||
+                n.contains("signal", ignoreCase = true) ||
+                n.contains("time", ignoreCase = true)
             val hitsId = idName.contains("clock", ignoreCase = true) ||
                 idName.contains("date", ignoreCase = true) ||
                 idName.contains("header", ignoreCase = true) ||

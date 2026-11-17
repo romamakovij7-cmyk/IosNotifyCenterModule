@@ -133,9 +133,10 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             Log.e("wallpaper init failed", t)
         }
 
-        // iOS-style status bar on top of the sheet (drawn by us).
+        // iOS-style status bar on the ROOT (not the sheet) so it stays pinned
+        // at the top regardless of the sheet's finger-tracked translation.
         try {
-            sheet.addView(
+            addView(
                 statusBar,
                 LayoutParams(LayoutParams.MATCH_PARENT, dp(30), Gravity.TOP)
             )
@@ -647,16 +648,11 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         try {
             val h = if (height > 0) height else resources.displayMetrics.heightPixels
 
-            // Full-screen sheet: no ugly gap at the bottom. The rounded bottom
-            // is only visible DURING the pull (partial expansion), when the
-            // sheet's edge is still on-screen; at full expansion it fills the
-            // screen exactly like iOS.
-            val sheetBottom = (expansion * h).toInt().coerceAtLeast(dp(60))
-            val lp = sheet.layoutParams as? LayoutParams
-            if (lp != null && lp.height != sheetBottom) {
-                lp.height = sheetBottom
-                sheet.layoutParams = lp
-            }
+            // The FULL-SCREEN sheet slides down from ABOVE as it opens and up
+            // as it closes - symmetric, finger-tracked motion in both directions.
+            // expansion 0 -> one screen above; expansion 1 -> in place.
+            val sheetY = -(1f - expansion) * h
+            sheet.translationY = sheetY
 
             // Cards: extra small stagger inside the moving sheet.
             column.translationY = -(1f - expansion) * dp(60)
