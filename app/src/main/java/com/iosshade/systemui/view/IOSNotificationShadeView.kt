@@ -99,6 +99,9 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
 
     private val springInterpolator = OvershootInterpolator(0.8f)
     private val hideInterpolator = AccelerateInterpolator(1.2f)
+    /** Smooth unlock-like reveal when the shade closes. */
+    private val revealInterpolator = android.view.animation.DecelerateInterpolator(1.6f)
+    private val fastOutSlowIn = android.view.animation.PathInterpolator(0.4f, 0f, 0.2f, 1f)
 
     init {
         clipToPadding = false
@@ -234,13 +237,22 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     // No blur computation at all - the glass buttons use a clean translucent
     // tint (liquid glass postponed), so no background blur is produced by us.
     // ------------------------------------------------------------------
+    private var cachedWallpaper: android.graphics.drawable.Drawable? = null
+
     private fun refreshWallpaper() {
         try {
-            val wm = android.app.WallpaperManager.getInstance(context)
-            val drawable = wm.drawable ?: return
-            wallpaper.setImageDrawable(drawable)
-            // Small dark filter: a light dim over the wallpaper (no frost/blur).
-            wallpaper.setColorFilter(0x1A000000, android.graphics.PorterDuff.Mode.SRC_OVER)
+            // Cache the drawable: querying WallpaperManager on every show was a
+            // noticeable main-thread stall at the start of each pull.
+            if (cachedWallpaper == null) {
+                cachedWallpaper = android.app.WallpaperManager.getInstance(context).drawable
+            }
+            val drawable = cachedWallpaper ?: return
+            if (wallpaper.drawable !== drawable) {
+                wallpaper.setImageDrawable(drawable)
+            }
+            // Light dim only (no frost/blur). Re-applied once; setColorFilter is
+            // cheap but we skip it when already set.
+            wallpaper.setColorFilter(0x14000000, android.graphics.PorterDuff.Mode.SRC_OVER)
             blurredWallpaper = null
         } catch (t: Throwable) {
             Log.w("refreshWallpaper failed: ${t.message}")
@@ -517,6 +529,11 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             edgeView.alpha = 0f
             // The CLOCK must stay put (static, like the real lock screen).
             // Only the notification cards animate in (see render/playCardEntrance).
+            cardsColumn.animate().cancel()
+            cardsColumn.alpha = 1f
+            cardsColumn.translationY = 0f
+            statusBar.animate().cancel()
+            statusBar.alpha = 1f
             alpha = 1f
             translationY = 0f
             scaleX = 1f
@@ -548,6 +565,11 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 scaleY = 1f
                 column.translationY = 0f
                 column.alpha = 1f
+                cardsColumn.animate().cancel()
+                cardsColumn.alpha = 1f
+                cardsColumn.translationY = 0f
+                statusBar.animate().cancel()
+                statusBar.alpha = 1f
                 motion.snapTo(0f)
                 expanded = false
                 edgeView.animate().cancel()
@@ -555,16 +577,29 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 onDone()
             }
             hideSafety = finish
+            // Unlock-style reveal (visual only — never touches the real keyguard):
+            //  1) cards + status bar dissolve first (the notification layer leaves)
+            //  2) the sheet glides up and fades, depth settling back to home
+            try {
+                cardsColumn.animate().cancel()
+                cardsColumn.animate().alpha(0f).translationY(dp(-24).toFloat())
+                    .setDuration(130L).setInterpolator(fastOutSlowIn).start()
+                statusBar.animate().cancel()
+                statusBar.animate().alpha(0f).setDuration(130L).start()
+            } catch (_: Throwable) {
+            }
             animate()
                 .alpha(0f)
-                .translationY(dp(-40).toFloat())
-                .setDuration(160L)
-                .setInterpolator(hideInterpolator)
+                .translationY(dp(-110).toFloat())
+                .scaleX(0.96f)
+                .scaleY(0.96f)
+                .setDuration(360L)
+                .setInterpolator(fastOutSlowIn)
                 .withLayer()
                 .withEndAction { finish.run() }
                 .start()
             // Safety net if the end action never fires (idempotent via `done`).
-            mainHandler.postDelayed(finish, 300)
+            mainHandler.postDelayed(finish, 480)
         } catch (t: Throwable) {
             hideSafety = null
             visibility = GONE

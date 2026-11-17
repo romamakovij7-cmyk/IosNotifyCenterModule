@@ -53,6 +53,20 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     /** Stock views we suppressed; restored on hide. Main-thread only. */
     private val hiddenStock = ArrayList<WeakReference<View>>()
 
+    /**
+     * Samsung chrome that must disappear while our shade is up:
+     *  - CapturedBlurContainer / lock_clock_blur  -> the frosted blur
+     *  - SecPanelBackground / fake_wallpaper      -> One UI's own background
+     *  - QSClockHeaderView / QSShortenDate        -> duplicate status bar + date
+     * Each entry remembers its original visibility so hide() restores exactly.
+     */
+    private data class ChromeEntry(val ref: WeakReference<View>, val visibility: Int)
+    private val hiddenChrome = ArrayList<ChromeEntry>()
+    private var chromeCollected = false
+
+    /** Pending "restore stock after collapse" callback; cancelled if we re-open. */
+    private var restoreRunnable: Runnable? = null
+
     /** True while the overlay is on screen. Read from the suppressor hook (main thread). */
     @Volatile
     private var shown = false
@@ -77,6 +91,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 val searchFrom = rootRef?.get()?.rootView
                 if (searchFrom != null) collectStockStacks(searchFrom, 0)
                 reassertHidden()
+                reassertChromeHidden()
                 killShadeBlur()
                 mainHandler.postDelayed(this, 300)
             } catch (_: Throwable) {
@@ -232,12 +247,16 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             val onKeyguard = state != ShadeEventBus.STATE_SHADE
             keyguard = onKeyguard
 
-            // EARLY suppression: hide the stock stack from the first pixel of
-            // the pull (before our overlay is visible). Otherwise Samsung's stock
-            // shade is visible and "pops up" during the handoff.
-            if (!onKeyguard && fraction > 0.01f && hiddenStock.isEmpty()) {
-                hideStockStack()
-            } else if (fraction <= 0.001f && hiddenStock.isNotEmpty() && !shown) {
+            // CONTINUOUS suppression: from the very first pixel of the pull until
+            // the panel closes, keep Samsung's stack/chrome pinned. A one-shot
+            // hide let One UI's layout passes re-show the stock shade mid-pull
+            // ("original notification center opens again").
+            if (!onKeyguard && fraction > 0.01f) {
+                if (hiddenStock.isEmpty()) hideStockStack() else pinStockViews()
+                if (!chromeCollected) collectChromeOnce() else reassertChromeHidden()
+            } else if (fraction <= 0.001f && hiddenStock.isNotEmpty() &&
+                !shown && restoreRunnable == null
+            ) {
                 restoreStockStack()
             }
 
@@ -249,6 +268,15 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             val shouldShow =
                 fraction >= threshold &&
                     (!onKeyguard || ModuleConfig.SHOW_ON_KEYGUARD)
+
+            // Re-opened while a close-restore was still pending: cancel it so we
+            // don't get yanked back to GONE by a stale restore callback.
+            if (shouldShow && hiding) {
+                restoreRunnable?.let { mainHandler.removeCallbacks(it) }
+                restoreRunnable = null
+                hiding = false
+                shown = false
+            }
 
             if (!shouldShow) {
                 if (shown || overlay.visibility != View.GONE) {
@@ -334,38 +362,33 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         // Fraction events keep arriving while we animate out; ignore them.
         if (hiding) return
         try {
-            // Keep `shown` TRUE (and stock suppressed) until the fade completes.
-            // Restoring stock at the start let Samsung's stack flash in while our
-            // sheet was still settling -> "original shade pops up after close".
+            // CRITICAL: keep `shown` TRUE (and stock suppressed) until Samsung's
+            // panel is CONFIRMED collapsed. Restoring stock the instant our sheet
+            // disappears is exactly why the original shade "pops up again".
             hiding = true
             mainHandler.removeCallbacks(suppressionTick)
             overlay.isClickable = false
             overlay.isFocusable = false
 
-            // Explicitly collapse Samsung's panel ONCE. Our overlay follows the
-            // finger visually, but if we don't tell the stock controller to close,
-            // it stays expanded and its (restored) shade pops up after we hide.
-            // A single call - not per-frame - so no feedback loop.
+            // Ask Samsung to collapse once; the delayed restore below re-checks
+            // and re-issues if the panel is still expanded.
             try {
                 PanelExpansionHook.requestCollapse()
             } catch (_: Throwable) {
             }
 
             if (animated) {
-                overlay.animateHide {
-                    shown = false
-                    restoreStockStack()
-                    restoreClockLayers()
-                    hiding = false
-                }
+                overlay.animateHide { scheduleStockRestore() }
             } else {
-                shown = false
-                restoreStockStack()
-                restoreClockLayers()
+                overlay.animate().cancel()
                 overlay.visibility = View.GONE
-                hiding = false
+                overlay.alpha = 1f
+                overlay.translationY = 0f
+                overlay.scaleX = 1f
+                overlay.scaleY = 1f
+                scheduleStockRestore()
             }
-            Log.i("Overlay hidden")
+            Log.i("Overlay hidden (visual)")
         } catch (t: Throwable) {
             // Last-resort fallback: snap everything back to a sane stock state.
             try {
@@ -379,6 +402,41 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             restoreClockLayers()
             Log.e("hideOverlay failed", t)
         }
+    }
+
+    /**
+     * Restores stock only after the panel's fraction has actually reached 0.
+     * Until then Samsung stays suppressed (no "original shade reopened" flash).
+     */
+    private fun scheduleStockRestore() {
+        restoreRunnable?.let { mainHandler.removeCallbacks(it) }
+        val r = object : Runnable {
+            override fun run() {
+                try {
+                    if (ShadeEventBus.lastFraction > 0.04f) {
+                        // Still expanded: keep suppressed and collapse again.
+                        try { PanelExpansionHook.requestCollapse() } catch (_: Throwable) {}
+                        mainHandler.postDelayed(this, 80)
+                        return
+                    }
+                    restoreRunnable = null
+                    shown = false
+                    restoreStockStack()
+                    restoreClockLayers()
+                    hiding = false
+                    Log.i("Stock restored after confirmed collapse")
+                } catch (t: Throwable) {
+                    restoreRunnable = null
+                    shown = false
+                    restoreStockStack()
+                    restoreClockLayers()
+                    hiding = false
+                    Log.e("scheduleStockRestore failed", t)
+                }
+            }
+        }
+        restoreRunnable = r
+        mainHandler.postDelayed(r, 120)
     }
 
     // ------------------------------------------------------------------
@@ -430,6 +488,8 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             val searchFrom = rootRef?.get()?.rootView ?: return
             if (ModuleConfig.DUMP_WINDOW_VIEWS) dumpWindowViews()
             collectStockStacks(searchFrom, 0)
+            collectChromeOnce()
+            reassertChromeHidden()
             var pinned = 0
             for (ref in hiddenStock) {
                 val v = ref.get() ?: continue
@@ -551,6 +611,77 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         } catch (_: Throwable) {
         }
         return false
+    }
+
+    // ------------------------------------------------------------------
+    // Chrome suppression: remove One UI's blur layer, its own background and
+    // the duplicate status-bar/date views while our shade is visible.
+    // ------------------------------------------------------------------
+
+    private fun isChromeView(view: View): Boolean {
+        try {
+            val id = if (view.id != View.NO_ID) {
+                try { view.resources.getResourceEntryName(view.id) } catch (_: Throwable) { "" }
+            } else ""
+            val cls = view.javaClass.name
+            if (id == "captured_blur_container" || id == "lock_clock_blur" ||
+                id == "nowbrief_lock_blur" || id == "patial_blur_view" ||
+                id == "notification_panel_background" || id == "fake_wallpaper" ||
+                id == "header_clock" || id == "header_date" ||
+                id == "pop_over_immersive_clock"
+            ) return true
+            if (cls.contains("CapturedBlurContainer") ||
+                cls.contains("QSClockHeaderView") ||
+                cls.contains("QSShortenDate") ||
+                cls.contains("QSClockPopOverImmersiveView") ||
+                cls.contains("SecPanelBackground")
+            ) return true
+        } catch (_: Throwable) {
+        }
+        return false
+    }
+
+    private fun collectChrome(view: View, depth: Int) {
+        if (depth > 32) return
+        try {
+            if (isChromeView(view) && hiddenChrome.none { it.ref.get() === view }) {
+                hiddenChrome.add(ChromeEntry(WeakReference(view), view.visibility))
+                view.visibility = View.INVISIBLE
+                return
+            }
+            if (view is ViewGroup) {
+                for (i in 0 until view.childCount) collectChrome(view.getChildAt(i), depth + 1)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun collectChromeOnce() {
+        if (chromeCollected && hiddenChrome.isNotEmpty()) return
+        val root = rootRef?.get()?.rootView ?: return
+        collectChrome(root, 0)
+        chromeCollected = true
+    }
+
+    private fun reassertChromeHidden() {
+        try {
+            for (e in hiddenChrome) {
+                val v = e.ref.get() ?: continue
+                if (v.visibility != View.INVISIBLE) v.visibility = View.INVISIBLE
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun restoreChrome() {
+        try {
+            for (e in hiddenChrome) {
+                e.ref.get()?.visibility = e.visibility
+            }
+        } catch (_: Throwable) {
+        }
+        hiddenChrome.clear()
+        chromeCollected = false
     }
 
     /** Called by ShadeMotion when a close settle finishes: now hide the overlay. */
@@ -777,7 +908,8 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         clockLayers.clear()
     }
 
-    private fun reassertHidden() {
+    /** Cheap pin of already-known stock views (no clock reparent / no DFS). */
+    private fun pinStockViews() {
         try {
             for (ref in hiddenStock) {
                 val v = ref.get() ?: continue
@@ -785,6 +917,13 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                     v.visibility = View.INVISIBLE
                 }
             }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun reassertHidden() {
+        pinStockViews()
+        try {
             revealClockLayer()
         } catch (t: Throwable) {
             Log.e("reassertHidden failed", t)
@@ -792,6 +931,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     }
 
     private fun restoreStockStack() {
+        restoreChrome()
         if (hiddenStock.isEmpty()) return
         try {
             for (ref in hiddenStock) {
