@@ -50,6 +50,15 @@ class ShadeMotion(context: Context, private val host: Host) {
     val isAnimating: Boolean
         get() = settling != null
 
+    /**
+     * When false, touch tracking updates OUR expansion but never writes it back
+     * into Samsung's panel. Used for the OPEN gesture: Samsung expands on its
+     * own, we just follow the finger 1:1 - no feedback loop, no 1.0 jump.
+     */
+    var driveStock: Boolean = true
+
+
+
     private val vc = ViewConfiguration.get(context)
     private val touchSlop = vc.scaledTouchSlop
     private val minFling = vc.scaledMinimumFlingVelocity.toFloat()
@@ -98,7 +107,7 @@ class ShadeMotion(context: Context, private val host: Host) {
                 t.computeCurrentVelocity(1000)
                 velocity = t.yVelocity.coerceIn(-maxFling, maxFling)
                 setExpansion(next, velocity, tracking = true)
-                host.onDriveStock(next)
+                if (driveStock) host.onDriveStock(next)
                 return true
             }
 
@@ -150,7 +159,7 @@ class ShadeMotion(context: Context, private val host: Host) {
         val start = expansion
         if (abs(target - start) < 0.001f) {
             setExpansion(target, 0f, tracking = false)
-            host.onDriveStock(target)
+            if (driveStock) host.onDriveStock(target)
             return
         }
         val distance = abs(target - start)
@@ -161,7 +170,7 @@ class ShadeMotion(context: Context, private val host: Host) {
             addUpdateListener { a ->
                 val f = a.animatedValue as Float
                 setExpansion(f.coerceIn(0f, 1f), 0f, tracking = false)
-                host.onDriveStock(f.coerceIn(0f, 1f))
+                if (driveStock) host.onDriveStock(f.coerceIn(0f, 1f))
             }
             addListener(object : android.animation.Animator.AnimatorListener {
                 override fun onAnimationStart(a: android.animation.Animator) {}
@@ -169,7 +178,7 @@ class ShadeMotion(context: Context, private val host: Host) {
                     if (settling == a) settling = null
                     // Snap to the exact target so no rounding gap remains.
                     setExpansion(target, 0f, tracking = false)
-                    host.onDriveStock(target)
+                    if (driveStock) host.onDriveStock(target)
                 }
                 override fun onAnimationCancel(a: android.animation.Animator) {
                     if (settling == a) settling = null

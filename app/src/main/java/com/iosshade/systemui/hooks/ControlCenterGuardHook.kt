@@ -45,17 +45,31 @@ class ControlCenterGuardHook(private val lpparam: LoadPackageParam) {
                                 if (width <= 0) return
                                 when (ev.actionMasked) {
                                     MotionEvent.ACTION_DOWN -> {
-                                        // Right side = Control Center gesture. Reset on
-                                        // EVERY down, so a stale flag can never leak into
-                                        // the next notification pull.
                                         ShadeEventBus.controlCenterGesture = ev.rawX >= width * 0.6f
+                                        // Opening gesture: track the finger in OUR
+                                        // motion (no stock write-back -> no loop).
+                                        if (!ShadeEventBus.controlCenterGesture &&
+                                            !ShadeOverlayController.isSuppressingStock()
+                                        ) {
+                                            ShadeOverlayController.onShadeTouch(ev)
+                                        }
                                         if (ShadeEventBus.controlCenterGesture &&
                                             ShadeEventBus.lastFraction < 0.1f
                                         ) {
                                             ShadeOverlayController.forceHide()
                                         }
                                     }
+                                    MotionEvent.ACTION_MOVE -> {
+                                        if (!ShadeOverlayController.isSuppressingStock() &&
+                                            !ShadeEventBus.controlCenterGesture
+                                        ) {
+                                            ShadeOverlayController.onShadeTouch(ev)
+                                        }
+                                    }
                                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                        if (!ShadeOverlayController.isSuppressingStock()) {
+                                            ShadeOverlayController.onShadeTouch(ev)
+                                        }
                                         if (ShadeEventBus.lastFraction < 0.1f) {
                                             ShadeEventBus.controlCenterGesture = false
                                         }

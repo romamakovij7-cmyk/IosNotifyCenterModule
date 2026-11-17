@@ -631,6 +631,24 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     }
 
     /**
+     * Gesture bridge for OPENING: track the finger 1:1 but DON'T drive stock.
+     * Samsung expands its own panel; we only follow with our overlay, so there
+     * is no feedback loop and no 1.0 jump.
+     */
+    fun onGestureTouch(ev: android.view.MotionEvent) {
+        try {
+            motion.driveStock = false
+            motion.onTouch(ev)
+            if (ev.actionMasked == android.view.MotionEvent.ACTION_UP ||
+                ev.actionMasked == android.view.MotionEvent.ACTION_CANCEL
+            ) {
+                motion.driveStock = true
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
      * Feed the stock panel's expansion into [motion]. When our own gesture is
      * driving, motion ignores these (it is authoritative); otherwise it mirrors
      * Samsung so a pull started on the status bar still opens our panel.
@@ -650,7 +668,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
 
             // The FULL-SCREEN sheet slides down from ABOVE as it opens and up
             // as it closes - symmetric, finger-tracked motion in both directions.
-            // expansion 0 -> one screen above; expansion 1 -> in place.
+            // fraction now comes purely from setExpandedFraction (no 1.0 jump).
             val sheetY = -(1f - expansion) * h
             sheet.translationY = sheetY
 

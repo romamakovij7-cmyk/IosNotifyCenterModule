@@ -528,7 +528,18 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         return false
     }
 
-    /** Layer 3: re-assert on every shade event while our overlay is visible. */
+    /**
+     * Bridge from the shade-window touch hook for the OPEN gesture. Tracks the
+     * finger 1:1 WITHOUT writing fraction back into Samsung (driveStock=false),
+     * so there is no feedback loop and no 1.0 jump - just smooth open that feels
+     * exactly like the close gesture.
+     */
+    fun onShadeTouch(ev: android.view.MotionEvent) {
+        try {
+            overlayRef?.get()?.onGestureTouch(ev)
+        } catch (_: Throwable) {
+        }
+    }
     /**
      * The user wants the ORIGINAL Samsung lock-screen clock. One UI's shade
      * clock layer (lock_clock_blur -> SecKeyguardStatusView -> SecKeyguardClock

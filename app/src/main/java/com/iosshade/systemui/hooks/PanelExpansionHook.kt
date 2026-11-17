@@ -54,8 +54,14 @@ class PanelExpansionHook(private val lpparam: LoadPackageParam) {
             "updateExpandedHeight"
         )
 
-        /** Whole-panel open/close entry points -> publish a fixed fraction as a fallback. */
-        private val EXPAND_METHODS = listOf("expand", "onPanelExpansionStarted")
+        /**
+         * Whole-panel OPEN entry points -> publish a fixed fraction as a fallback.
+         * NOTE: `onPanelExpansionStarted` is deliberately NOT here - it fires at
+         * the START of a pull and publishing 1.0 there makes the overlay jump to
+         * fully-open faster than the finger. The real fraction comes from the
+         * setExpandedFraction/height hooks below.
+         */
+        private val EXPAND_METHODS = listOf("expand")
         private val COLLAPSE_METHODS = listOf(
             "collapse",
             "collapsePanel",
