@@ -214,8 +214,8 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 LayoutParams(LayoutParams.MATCH_PARENT, dp(6))
             )
 
-            val lp = LayoutParams(dp(160), dp(6))
-            lp.leftMargin = (resources.displayMetrics.widthPixels - dp(160)) / 2
+            val lp = LayoutParams(dp(160), dp(6), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+            lp.bottomMargin = dp(8)
             sheet.addView(edgeView, lp)
         } catch (t: Throwable) {
             Log.e("buildEdge failed", t)
@@ -636,14 +636,12 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             val h = if (height > 0) height else resources.displayMetrics.heightPixels
 
             // THE WHOLE SHEET FOLLOWS THE FINGER. At expansion 0 the content
-            // sits one screen ABOVE; at 1 it is in place. This is the iOS move:
-            // the entire lock-screen sheet slides in from the top with the drag.
+            // sits one screen ABOVE; at 1 it is in place. The sheet is always
+            // full-screen so the scroll view and buttons keep their full height.
             val sheetY = -(1f - expansion) * h
             wallpaper.translationY = sheetY
             scroll.translationY = sheetY
             lockButtonsRow?.translationY = sheetY
-            // Clock follows the sheet AND sits ~42dp higher than the cards, so
-            // the depth-effect clock clears the notification card below it.
             clockLayer?.get()?.let { it.translationY = sheetY - dp(42) }
 
             // Cards: extra small stagger inside the moving sheet.
@@ -659,9 +657,9 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 clock.scaleY = scale
             }
 
-            // White end-line rides the BOTTOM of the moving sheet, visible while
-            // opening/closing (the video shows it during the gesture).
-            edgeView.translationY = (expansion * h - edgeView.height).coerceAtLeast(0f)
+            // White end-line: Gravity.BOTTOM inside the sheet + follows the
+            // finger, visible only while opening/closing.
+            edgeView.translationY = sheetY
             val moving = (tracking || motion.isAnimating) &&
                 expansion >= 0.03f && expansion <= 0.98f
             if (moving) {
