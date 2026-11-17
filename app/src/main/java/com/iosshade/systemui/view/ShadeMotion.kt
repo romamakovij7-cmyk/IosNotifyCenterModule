@@ -6,7 +6,6 @@ import android.view.VelocityTracker
 import android.view.ViewConfiguration
 import android.animation.ValueAnimator
 import android.view.animation.Interpolator
-import android.view.animation.PathInterpolator
 import kotlin.math.abs
 
 /**
@@ -177,7 +176,9 @@ class ShadeMotion(context: Context, private val host: Host) {
             return
         }
         val distance = abs(target - start)
-        val duration = (110L + (distance * 150L)).toLong().coerceIn(110L, 260L)
+        // Longer, smoothly-decelerating settle: a big flick travels far and
+        // needs more time; a tiny correction stays short. Range 180-380ms.
+        val duration = (180L + (distance * 260L)).toLong().coerceIn(180L, 380L)
         val animator = ValueAnimator.ofFloat(start, target).apply {
             this.duration = duration
             interpolator = SETTLE_INTERPOLATOR
@@ -233,7 +234,8 @@ class ShadeMotion(context: Context, private val host: Host) {
     }
 
     companion object {
-        /** Smooth decelerate with a subtle overshoot, mirroring AOSP's spring settle. */
-        val SETTLE_INTERPOLATOR: Interpolator = PathInterpolator(0.2f, 0.9f, 0.25f, 1.02f)
+        /** Smooth ease-out (no overshoot) - the finger already provided the fling. */
+        val SETTLE_INTERPOLATOR: Interpolator =
+            android.view.animation.DecelerateInterpolator(1.6f)
     }
 }

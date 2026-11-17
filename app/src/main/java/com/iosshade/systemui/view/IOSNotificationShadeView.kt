@@ -116,18 +116,11 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                     val w = view.width
                     val h = view.height
                     if (w <= 0 || h <= 0) return
-                    val r = dp(38).toFloat()
-                    // Rounded BOTTOM corners only, square at the top (status bar).
-                    val path = android.graphics.Path().apply {
-                        moveTo(0f, 0f)
-                        lineTo(w.toFloat(), 0f)
-                        lineTo(w.toFloat(), h - r)
-                        quadTo(w.toFloat(), h.toFloat(), w - r, h.toFloat())
-                        lineTo(r, h.toFloat())
-                        quadTo(0f, h.toFloat(), 0f, h - r)
-                        close()
-                    }
-                    outline.setPath(path)
+                    val r = dp(38)
+                    // setRoundRect is GPU-accelerated (unlike a Path mask).
+                    // Shift the rect UP by r so only the BOTTOM corners curve
+                    // inside the view; the top stays square under the status bar.
+                    outline.setRoundRect(0, -r, w, h, r.toFloat())
                 }
             }
             sheet.clipToOutline = true
@@ -478,19 +471,38 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     fun render(models: List<NotifModel>, animateIn: Boolean): Boolean {
         return try {
             lastModels = models
-            cardsColumn.removeAllViews()
-            if (models.isEmpty()) return false
+            if (models.isEmpty()) {
+                cardsColumn.removeAllViews()
+                return false
+            }
 
             val newest = models.maxByOrNull { it.timeMillis } ?: models.first()
             val visible = if (expanded) models else listOf(newest)
 
+            // Reuse existing cards when the visible COUNT and keys match -
+            // avoids re-inflating views / reloading icons on every re-open.
+            val existing = (0 until cardsColumn.childCount).map { cardsColumn.getChildAt(it) }
+            val keysMatch = existing.size == visible.size &&
+                existing.indices.all { i ->
+                    existing[i].tag as? String == visible[i].key
+                }
+
+            if (keysMatch) {
+                if (animateIn) {
+                    visible.indices.forEach { playCardEntrance(existing[it], it) }
+                }
+                scroll.scrollTo(0, 0)
+                return true
+            }
+
+            cardsColumn.removeAllViews()
             val tapOverride: (() -> Unit)? = if (!expanded) ({ expandAll() }) else null
             visible.forEachIndexed { index, model ->
                 val card = NotifCardView(context, model, tapOverride)
+                card.tag = model.key
                 cardsColumn.addView(card)
                 if (animateIn) playCardEntrance(card, index)
             }
-            // Return to top for the fresh set.
             scroll.scrollTo(0, 0)
             true
         } catch (t: Throwable) {
@@ -517,8 +529,8 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 .translationY(0f)
                 .scaleX(1f)
                 .scaleY(1f)
-                .setStartDelay((32L * index.coerceAtMost(8)))
-                .setDuration(240L)
+                .setStartDelay((22L * index.coerceAtMost(8)))
+                .setDuration(300L)
                 .setInterpolator(springInterpolator)
                 .withLayer()
                 .start()
@@ -698,7 +710,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             clockLayer?.get()?.let { clock ->
                 clock.pivotX = clock.width / 2f
                 clock.pivotY = clock.height * 0.28f
-                val scale = 0.92f + 0.08f * expansion
+                val scale = 0.96f + 0.04f * expansion
                 clock.scaleX = scale
                 clock.scaleY = scale
             }

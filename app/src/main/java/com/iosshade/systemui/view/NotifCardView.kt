@@ -40,13 +40,14 @@ class NotifCardView(
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14), dp(13), dp(14), dp(13))
 
-            // Solid card, no liquid glass (per the user's request): flat fill,
-            // soft elevation shadow for separation from the sheet.
+            // iOS-style card: solid translucent fill with a hairline rim for
+            // crisp definition over any wallpaper.
             background = GradientDrawable().apply {
                 cornerRadius = dp(22).toFloat()
-                setColor(if (isNight()) 0xFF2C2C2E.toInt() else 0xFFFFFFFF.toInt())
+                setColor(if (isNight()) 0xE62C2C2E.toInt() else 0xEBFFFFFF.toInt())
+                setStroke(dp(1), if (isNight()) 0x1AFFFFFF else 0x14000000)
             }
-            elevation = dp(3).toFloat()
+            elevation = dp(4).toFloat()
             layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
                 .apply { bottomMargin = dp(10) }
 
@@ -111,8 +112,9 @@ class NotifCardView(
     // ------------------------------------------------------------------
     private fun buildIcon(): ImageView {
         val iconView = ImageView(context).apply {
-            layoutParams = LayoutParams(dp(36), dp(36))
+            layoutParams = LayoutParams(dp(40), dp(40))
             scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(2), dp(2), dp(2), dp(2))
         }
         try {
             model.icon?.loadDrawable(context)?.let { iconView.setImageDrawable(it) }
@@ -127,7 +129,7 @@ class NotifCardView(
         val textColumn = LinearLayout(context).apply {
             orientation = VERTICAL
             layoutParams = LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f)
-                .apply { leftMargin = dp(11) }
+                .apply { leftMargin = dp(13) }
         }
 
         // Row 1: title (bold, left) + timestamp (right) - like the video.
