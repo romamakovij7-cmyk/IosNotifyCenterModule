@@ -50,10 +50,12 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     private val sheet = FrameLayout(context)
     private val statusBar = StatusBarView(context)
     private var blurredWallpaper: android.graphics.Bitmap? = null
+    private var wallpaperBlurReady = false
     private var torchButton: FrameLayout? = null
     private var torchOn = false
     private var lockButtonsRow: View? = null
     private var clockLayer: java.lang.ref.WeakReference<View>? = null
+    private val edgeAnimating = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
      * The single authoritative expansion (0..1) and all gesture physics.
@@ -65,7 +67,10 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         }
 
         override fun onDriveStock(fraction: Float) {
-            com.iosshade.systemui.hooks.PanelExpansionHook.requestSetFraction(fraction)
+            // NO-OP: writing our fraction back into Samsung created a feedback
+            // loop (it re-posted -> overlay re-showed -> "spawn" after fast
+            // swipes). Samsung already moves its panel from the real touch; our
+            // overlay only mirrors it visually.
         }
 
         override fun canScrollContentDown(): Boolean = scroll.canScrollVertically(1)
@@ -160,19 +165,11 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         scroll.addView(column, ViewGroupLayoutParams())
         sheet.addView(scroll)
 
-        // Tap on empty area = close (children like cards and the x keep their own taps).
+        // Tap on empty area = close (children like cards keep their own taps).
+        // Finger DRAG tracking is done synchronously by ControlCenterGuardHook
+        // (window-level) - NOT here - so there's a single source of truth.
         scroll.isClickable = true
         scroll.setOnClickListener { closePanel() }
-
-        // ALL finger tracking goes through ShadeMotion - the single authoritative
-        // expansion value. No view transform is written directly from touch.
-        scroll.setOnTouchListener { _, ev ->
-            try {
-                motion.onTouch(ev)
-            } catch (_: Throwable) {
-                false
-            }
-        }
 
         // Transparent column: cards float directly over the plain wallpaper.
         column.orientation = LinearLayout.VERTICAL
@@ -244,9 +241,10 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             val drawable = wm.drawable ?: return
             wallpaper.setImageDrawable(drawable)
 
-            // Build a blurred copy of the wallpaper once per show. The glass
-            // buttons sample the right region of it (native backdrop blur,
-            // the same idea as the Backdrop/Kyant library - no Compose needed).
+            // The blurred copy is only for the glass buttons. Build it ONCE per
+            // session (the wallpaper doesn't change) - rebuilding it every show
+            // cost ~30ms on the main thread at the start of every pull.
+            if (wallpaperBlurReady && blurredWallpaper != null) return
             val w = resources.displayMetrics.widthPixels
             val h = resources.displayMetrics.heightPixels
             val sharp = android.graphics.Bitmap.createBitmap(
@@ -297,19 +295,23 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             }
             small.setPixels(out, 0, sw, 0, 0, sw, sh)
             blurredWallpaper = android.graphics.Bitmap.createScaledBitmap(small, w, h, true)
+            wallpaperBlurReady = true
         } catch (t: Throwable) {
             Log.w("refreshWallpaper failed: ${t.message}")
         }
     }
 
-    /** Samples the blurred wallpaper at this view's on-screen position. */
+    /** Samples the blurred wallpaper at this view's on-screen position. No allocation. */
     private inner class GlassBackdropView : View(context) {
+        private val src = android.graphics.Rect()
+        private val dst = android.graphics.RectF()
+        private val loc = IntArray(2)
+
         override fun onDraw(canvas: android.graphics.Canvas) {
             try {
                 val bmp = blurredWallpaper ?: return
                 val rootW = rootView.width.coerceAtLeast(1)
                 val rootH = rootView.height.coerceAtLeast(1)
-                val loc = IntArray(2)
                 getLocationOnScreen(loc)
                 val sx = bmp.width.toFloat() / rootW
                 val sy = bmp.height.toFloat() / rootH
@@ -318,11 +320,9 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 val r = ((loc[0] + width) * sx).toInt().coerceAtMost(bmp.width)
                 val b = ((loc[1] + height) * sy).toInt().coerceAtMost(bmp.height)
                 if (r <= l || b <= t) return
-                val patch = android.graphics.Bitmap.createBitmap(bmp, l, t, r - l, b - t)
-                canvas.drawBitmap(
-                    patch, null,
-                    android.graphics.RectF(0f, 0f, width.toFloat(), height.toFloat()), null
-                )
+                src.set(l, t, r, b)
+                dst.set(0f, 0f, width.toFloat(), height.toFloat())
+                canvas.drawBitmap(bmp, src, dst, null)
             } catch (_: Throwable) {
             }
         }
@@ -566,41 +566,40 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         }
     }
 
-    /** Panel exit: slide up + fade, then GONE. Falls back to instant hide. */
+    /** Panel exit: fade out then GONE. Fallback guarantees onDone runs once. */
     fun animateHide(onDone: () -> Unit) {
         try {
             animate().cancel()
-            val safety = Runnable {
+            var done = false
+            val finish = Runnable {
+                if (done) return@Runnable
+                done = true
                 hideSafety = null
-                if (visibility != GONE) {
-                    visibility = GONE
-                    alpha = 1f
-                    translationY = 0f
-                    scaleX = 1f
-                    scaleY = 1f
-                    // Reset the finger-follow transform and the collapsed state so
-                    // the next open starts clean: sheet up, newest-notification-only.
-                    column.translationY = 0f
-                    column.alpha = 1f
-                    motion.snapTo(0f)
-                    expanded = false
-                    edgeView.animate().cancel()
-                    edgeView.alpha = 0f
-                    onDone()
-                }
+                animate().cancel()
+                visibility = GONE
+                alpha = 1f
+                translationY = 0f
+                scaleX = 1f
+                scaleY = 1f
+                column.translationY = 0f
+                column.alpha = 1f
+                motion.snapTo(0f)
+                expanded = false
+                edgeView.animate().cancel()
+                edgeView.alpha = 0f
+                onDone()
             }
-            hideSafety = safety
+            hideSafety = finish
             animate()
                 .alpha(0f)
                 .translationY(dp(-40).toFloat())
                 .setDuration(160L)
                 .setInterpolator(hideInterpolator)
                 .withLayer()
-                .withEndAction { safety.run() }
+                .withEndAction { finish.run() }
                 .start()
-            // Safety net: if the end action never fires (rare animator edge cases),
-            // force the hidden state shortly after. Idempotent via visibility check.
-            mainHandler.postDelayed(safety, 300)
+            // Safety net if the end action never fires (idempotent via `done`).
+            mainHandler.postDelayed(finish, 300)
         } catch (t: Throwable) {
             hideSafety = null
             visibility = GONE
@@ -634,50 +633,51 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
      * driving, motion ignores these (it is authoritative); otherwise it mirrors
      * Samsung so a pull started on the status bar still opens our panel.
      */
-    /** Called when the finger is released: hand the exact position to ShadeMotion. */
-    fun onFingerRelease(offsetPx: Float) {
+    /** Synchronous 1:1 tracking straight from the touch hook (no bus lag). */
+    fun onFingerMove(offsetPx: Float) {
         try {
-            val h = resources.displayMetrics.heightPixels
-            motion.adoptAndSettle(offsetPx / h)
+            val exp = (offsetPx / screenHeightPx).coerceIn(0f, 1f)
+            // Keep motion in sync so the settle starts from the exact release value.
+            motion.setExternalExpansion(exp)
+            applyExpansion(exp, 0f, tracking = true)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Called when the finger is released: settle from the exact position. */
+    fun onFingerRelease(offsetPx: Float, velocity: Float) {
+        try {
+            val exp = (offsetPx / screenHeightPx).coerceIn(0f, 1f)
+            motion.adoptAndSettle(exp, velocity)
         } catch (_: Throwable) {
         }
     }
 
     fun setPanelState(fraction: Float, onKeyguard: Boolean) {
-        val tracker = com.iosshade.systemui.core.FingerTracker
-        if (tracker.active && tracker.offsetPx > 0f) {
-            // Finger is dragging -> apply the EXACT raw pixel offset now,
-            // bypassing motion's fraction smoothing entirely.
-            applyExpansion(tracker.offsetPx / resources.displayMetrics.heightPixels, 0f, true)
-        } else {
-            motion.onExternalFraction(fraction)
-        }
+        // While our finger drives the sheet synchronously, ignore Samsung's
+        // async fraction (it would jump the sheet back). During settle/fling the
+        // motion's animator owns the value, so ignore there too.
+        if (motion.isAnimating) return
+        if (com.iosshade.systemui.core.FingerTracker.active) return
+        motion.onExternalFraction(fraction)
     }
+
+    /** Current absolute sheet offset in px (expansion * screen height). */
+    fun currentOffsetPx(): Float = motion.expansion * screenHeightPx
 
     /**
      * The ONLY place that writes transforms. Every element derives from the one
      * authoritative [expansion], so finger tracking, fling settle and stock
      * mirroring all look identical - no competing animation systems.
-     *
-     * [heightPx] is the stock panel's real expansion height; when available it
-     * drives the sheet translation 1:1 (fraction*screenHeight over-shoots because
-     * One UI's maxPanelHeight is smaller than the screen).
      */
     private fun applyExpansion(expansion: Float, velocity: Float, tracking: Boolean) {
         try {
-            val h = if (height > 0) height else resources.displayMetrics.heightPixels
+            val h = if (height > 0) height else screenHeightPx
 
-            // While the finger is DOWN, use its exact raw pixel offset (1:1).
-            // Once released, use motion's expansion - it adopts the release
-            // position and runs the settle animation to fully open/closed.
-            val tracker = com.iosshade.systemui.core.FingerTracker
-            val f = if (tracker.active && tracker.offsetPx > 0f) {
-                tracker.offsetPx
-            } else {
-                expansion * h
-            }
-            // Sheet is full-screen; slide it down from above by (h - offset).
-            sheet.translationY = -(h - f.coerceIn(0f, h.toFloat()))
+            // Position follows EXACTLY the expansion passed in. During a finger
+            // gesture the hook passes offsetPx/h; during settle motion passes its
+            // animated value. No hidden state reads, no competing sources.
+            sheet.translationY = -(h - (expansion * h).coerceIn(0f, h.toFloat()))
 
             // Cards: extra small stagger inside the moving sheet.
             column.translationY = -(1f - expansion) * dp(60)
@@ -694,36 +694,31 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 clock.scaleY = scale
             }
 
-            // White end-line is pinned to the sheet bottom (Gravity.BOTTOM),
-            // so it rides the rounded edge automatically - no manual Y.
+            // White end-line rides the rounded edge. Set alpha directly (no
+            // animator allocation) during the gesture; only run a fade animator
+            // on the one transition to hidden.
             val moving = (tracking || motion.isAnimating) &&
                 expansion >= 0.03f && expansion <= 0.98f
             if (moving) {
-                edgeView.animate().cancel()
-                if (edgeView.alpha < 1f) edgeView.alpha = 1f
-            } else if (edgeView.alpha > 0f) {
+                if (edgeView.alpha < 1f) {
+                    edgeAnimating.set(false)
+                    edgeView.animate().cancel()
+                    edgeView.alpha = 1f
+                }
+            } else if (edgeView.alpha > 0f && edgeAnimating.compareAndSet(false, true)) {
                 fadeEdgeOut()
             }
         } catch (_: Throwable) {
         }
     }
 
-    private val recolorClockTick = object : Runnable {
-        override fun run() {
-            val c = clockLayer?.get()
-            if (c == null) return
-            // NO recoloring: the user has Samsung's "depth effect" enabled,
-            // which draws the clock THROUGH the wallpaper subject. Our repaint
-            // would break it - we only keep the layer visible & positioned.
-            mainHandler.postDelayed(this, 90)
-        }
-    }
-
-    /** Keeps Samsung's clock untouched (its own depth effect must work). */
+    /**
+     * Keeps Samsung's clock untouched (its own depth effect must work).
+     * No recoloring / no periodic tick: Samsung draws the clock THROUGH the
+     * wallpaper subject, and repainting it breaks that effect.
+     */
     private fun paintClockWhite(view: View?) {
-        if (view == null) return
-        mainHandler.removeCallbacks(recolorClockTick)
-        mainHandler.postDelayed(recolorClockTick, 90)
+        // Intentionally empty - kept as the single clock-setup hook point.
     }
 
     /** Inserts the reparented clock layer INSIDE the clipped sheet, above wallpaper. */
@@ -743,9 +738,6 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
 
     /** Called by the controller when it reparents Samsung's clock layer in/out. */
     fun setClockLayer(view: View?) {
-        if (view == null) {
-            mainHandler.removeCallbacks(recolorClockTick)
-        }
         clockLayer = view?.let { java.lang.ref.WeakReference(it) }
         paintClockWhite(view)
         // Apply the current transform immediately so it never pops in at scale 1.
@@ -756,16 +748,22 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     private fun fadeEdgeOut() {
         try {
             edgeView.animate().cancel()
-            edgeView.animate().alpha(0f).setDuration(100L).start()
+            edgeView.animate().alpha(0f).setDuration(100L)
+                .withEndAction { edgeAnimating.set(false) }
+                .start()
         } catch (_: Throwable) {
+            edgeAnimating.set(false)
         }
     }
 
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+    // Cached density — avoids a displayMetrics lookup on every dp() call (hot path).
+    private val density: Float = resources.displayMetrics.density
+    private val screenHeightPx: Int = resources.displayMetrics.heightPixels
     private fun dp(value: Int): Int =
-        (value * resources.displayMetrics.density + 0.5f).toInt()
+        (value * density + 0.5f).toInt()
 
     private fun isNight(): Boolean =
         (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==

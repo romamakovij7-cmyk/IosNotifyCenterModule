@@ -67,14 +67,23 @@ object ShadeEventBus {
         listeners.remove(listener)
     }
 
+    // Coalescing: 3 fraction hooks fire per frame; posting each floods the main
+    // queue. A single pending Runnable reads the latest value => one update/frame.
+    private var fractionPostPending = false
+    private val fractionRunnable = Runnable {
+        fractionPostPending = false
+        val value = lastFraction
+        listeners.forEach { l ->
+            runCatching { l.onExpandedFractionChanged(value) }
+                .onFailure { Log.e("Listener.onExpandedFractionChanged failed", it) }
+        }
+    }
+
     fun postExpandedFraction(fraction: Float) {
-        val clamped = fraction.coerceIn(0f, 1f)
-        lastFraction = clamped
-        mainHandler.post {
-            listeners.forEach { l ->
-                runCatching { l.onExpandedFractionChanged(clamped) }
-                    .onFailure { Log.e("Listener.onExpandedFractionChanged failed", it) }
-            }
+        lastFraction = fraction.coerceIn(0f, 1f)
+        if (!fractionPostPending) {
+            fractionPostPending = true
+            mainHandler.post(fractionRunnable)
         }
     }
 

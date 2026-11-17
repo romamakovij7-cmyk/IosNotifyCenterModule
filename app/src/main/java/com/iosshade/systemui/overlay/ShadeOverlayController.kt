@@ -11,6 +11,7 @@ import android.view.WindowManager
 import com.iosshade.systemui.core.Log
 import com.iosshade.systemui.core.ModuleConfig
 import com.iosshade.systemui.core.ShadeEventBus
+import com.iosshade.systemui.hooks.PanelExpansionHook
 import com.iosshade.systemui.data.NotifCollector
 import com.iosshade.systemui.view.IOSNotificationShadeView
 import java.lang.ref.WeakReference
@@ -328,23 +329,34 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         // Fraction events keep arriving while we animate out; ignore them.
         if (hiding) return
         try {
-            // `shown` must go false BEFORE restoring: the suppressor hook keys off it.
+            // Keep `shown` TRUE (and stock suppressed) until the fade completes.
+            // Restoring stock at the start let Samsung's stack flash in while our
+            // sheet was still settling -> "original shade pops up after close".
             hiding = true
-            shown = false
             mainHandler.removeCallbacks(suppressionTick)
             overlay.isClickable = false
             overlay.isFocusable = false
 
-            // Bring the stock stack back immediately: our backdrop fades out on top
-            // of it, so the cross-fade reads as one dissolving panel instead of an
-            // empty shade that pops its content in later. Samsung's clock layer
-            // goes back to EXACTLY what it was (visibility + blur background).
-            restoreStockStack()
-            restoreClockLayers()
+            // Explicitly collapse Samsung's panel ONCE. Our overlay follows the
+            // finger visually, but if we don't tell the stock controller to close,
+            // it stays expanded and its (restored) shade pops up after we hide.
+            // A single call - not per-frame - so no feedback loop.
+            try {
+                PanelExpansionHook.requestCollapse()
+            } catch (_: Throwable) {
+            }
 
             if (animated) {
-                overlay.animateHide { hiding = false }
+                overlay.animateHide {
+                    shown = false
+                    restoreStockStack()
+                    restoreClockLayers()
+                    hiding = false
+                }
             } else {
+                shown = false
+                restoreStockStack()
+                restoreClockLayers()
                 overlay.visibility = View.GONE
                 hiding = false
             }
@@ -375,6 +387,8 @@ object ShadeOverlayController : ShadeEventBus.Listener {
      * and the radius zeroed. Samsung re-sets its window params on its own
      * (state changes, new pulls) - we simply re-kill on every event while shown.
      */
+    private var blurKilledLogged = false
+
     private fun killShadeBlur() {
         try {
             val root = rootRef?.get() ?: return
@@ -385,14 +399,16 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 changed = true
             }
             if (lp.blurBehindRadius != 0) {
-                Log.i("Shade blur-behind radius=${lp.blurBehindRadius} -> zeroing")
                 lp.blurBehindRadius = 0
                 changed = true
             }
             if (changed) {
                 val wm = root.context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
                 wm?.updateViewLayout(root, lp)
-                Log.i("Shade blur-behind killed (flags=${lp.flags})")
+                if (!blurKilledLogged) {
+                    blurKilledLogged = true
+                    Log.i("Shade blur-behind killed")
+                }
             }
         } catch (t: Throwable) {
             Log.e("killShadeBlur failed", t)
@@ -532,12 +548,46 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         return false
     }
 
-    /** Forward a finger release to the overlay so the sheet settles instead of sticking. */
-    fun onFingerRelease(offsetPx: Float) {
+    /** Current absolute sheet offset in px (for the touch hook's DOWN baseline). */
+    fun currentOffsetPx(): Float = overlayRef?.get()?.currentOffsetPx() ?: 0f
+
+    /** Forward a finger release (position + velocity) so the sheet settles. */
+    fun onFingerRelease(offsetPx: Float, velocity: Float) {
         try {
-            overlayRef?.get()?.onFingerRelease(offsetPx)
+            overlayRef?.get()?.onFingerRelease(offsetPx, velocity)
         } catch (_: Throwable) {
         }
+    }
+
+    /**
+     * Called SYNCHRONOUSLY from the touch hook on ACTION_DOWN. Hide stock at
+     * the very first pixel so Samsung's shade can never flash in, and force-hide
+     * immediately for a Control Center (right-side) pull.
+     */
+    fun onGestureDown(rightSide: Boolean) {
+        try {
+            if (rightSide) {
+                forceHide()
+                return
+            }
+            // Suppress stock synchronously (only hide the stack; do NOT reparent
+            // the clock - that happens when the overlay actually shows).
+            hideStockStack()
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Synchronous 1:1 finger tracking - no event-bus frame lag. */
+    fun onGestureMove(offsetPx: Float) {
+        try {
+            overlayRef?.get()?.onFingerMove(offsetPx)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Called on ACTION_UP; the settle was already started by onFingerRelease. */
+    fun onGestureUp() {
+        // Intentionally empty.
     }
 
     /**

@@ -130,13 +130,18 @@ class ShadeMotion(context: Context, private val host: Host) {
 
     /**
      * Called when the finger is released after a raw-pixel drag: adopt the
-     * current visual position as our expansion, then settle to the nearest
-     * stable state (fully open / fully closed) with velocity-aware physics.
+     * current visual position and velocity, then settle to the nearest stable
+     * state (fully open / fully closed) with velocity-aware physics.
      */
-    fun adoptAndSettle(value: Float) {
+    fun adoptAndSettle(value: Float, releaseVelocity: Float = 0f) {
         cancelSettling()
-        setExpansion(value.coerceIn(0f, 1f), 0f, tracking = false)
+        setExpansion(value.coerceIn(0f, 1f), releaseVelocity, tracking = false)
         decideAndSettle()
+    }
+
+    /** Keep motion in sync during synchronous finger tracking (no animation). */
+    fun setExternalExpansion(value: Float) {
+        expansion = value.coerceIn(0f, 1f)
     }
 
     /** Mirrors the stock panel's expansion while we are NOT driving it. */

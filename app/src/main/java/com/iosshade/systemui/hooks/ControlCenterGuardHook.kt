@@ -37,7 +37,7 @@ class ControlCenterGuardHook(private val lpparam: LoadPackageParam) {
                     "dispatchTouchEvent",
                     MotionEvent::class.java,
                     object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
+        override fun beforeHookedMethod(param: MethodHookParam) {
                             try {
                                 val ev = param.args[0] as? MotionEvent ?: return
                                 val view = param.thisObject as? android.view.View ?: return
@@ -45,30 +45,33 @@ class ControlCenterGuardHook(private val lpparam: LoadPackageParam) {
                                 if (width <= 0) return
                                 when (ev.actionMasked) {
                                     MotionEvent.ACTION_DOWN -> {
-                                        // Track raw finger Y for 1:1 sheet motion.
-                                        com.iosshade.systemui.core.FingerTracker.down(ev.rawY)
-                                        ShadeEventBus.controlCenterGesture = ev.rawX >= width * 0.6f
-                                        if (ShadeEventBus.controlCenterGesture &&
-                                            ShadeEventBus.lastFraction < 0.1f
-                                        ) {
-                                            ShadeOverlayController.forceHide()
-                                        }
+                                        // START synchronously: capture the current
+                                        // absolute offset and suppress stock BEFORE
+                                        // Samsung can draw it (no frame gap).
+                                        val currentOffset =
+                                            ShadeOverlayController.currentOffsetPx()
+                                        com.iosshade.systemui.core.FingerTracker
+                                            .down(ev.rawY, currentOffset)
+                                        val right = ev.rawX >= width * 0.6f
+                                        ShadeEventBus.controlCenterGesture = right
+                                        ShadeOverlayController.onGestureDown(right)
                                     }
                                     MotionEvent.ACTION_MOVE -> {
-                                        com.iosshade.systemui.core.FingerTracker.move(ev.rawY)
+                                        val tracker = com.iosshade.systemui.core.FingerTracker
+                                        tracker.move(ev.rawY)
+                                        if (!ShadeEventBus.controlCenterGesture) {
+                                            ShadeOverlayController.onGestureMove(tracker.offsetPx)
+                                        }
                                     }
                                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                                        // Hand the exact finger position to motion so
-                                        // the sheet SETTLES (open/close) instead of
-                                        // sticking halfway on release.
-                                        if (ev.actionMasked == MotionEvent.ACTION_UP &&
-                                            com.iosshade.systemui.core.FingerTracker.active
-                                        ) {
-                                            ShadeOverlayController.onFingerRelease(
-                                                com.iosshade.systemui.core.FingerTracker.offsetPx
-                                            )
+                                        val tracker = com.iosshade.systemui.core.FingerTracker
+                                        val offset = tracker.offsetPx
+                                        val velocity = tracker.velocityPxPerSec
+                                        if (ev.actionMasked == MotionEvent.ACTION_UP && tracker.active) {
+                                            ShadeOverlayController.onFingerRelease(offset, velocity)
                                         }
-                                        com.iosshade.systemui.core.FingerTracker.up()
+                                        tracker.up()
+                                        ShadeOverlayController.onGestureUp()
                                         if (ShadeEventBus.lastFraction < 0.1f) {
                                             ShadeEventBus.controlCenterGesture = false
                                         }
