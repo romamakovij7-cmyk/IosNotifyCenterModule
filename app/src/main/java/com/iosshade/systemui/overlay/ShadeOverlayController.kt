@@ -56,18 +56,6 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     @Volatile
     private var shown = false
 
-    /**
-     * Bridge from the shade-window touch hook: feeds raw DOWN/MOVE/UP into
-     * ShadeMotion so opening (which starts on the status bar, before our overlay
-     * is visible) is finger-tracked 1:1, exactly like closing.
-     */
-    fun onShadeTouch(ev: android.view.MotionEvent) {
-        try {
-            overlayRef?.get()?.onGestureTouch(ev)
-        } catch (_: Throwable) {
-        }
-    }
-
     /** True while the panel state is keyguard (drives keyguard-content suppression). */
     @Volatile
     private var keyguard = false
@@ -293,8 +281,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                     overlay.isFocusable = false
                     restoreStockStack()
                     restoreClockLayers()
-                    restoreOriginalStatusBar()
-                    return
+                            return
                 }
             }
 
@@ -317,7 +304,6 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 }
                 overlay.setPanelState(fraction, onKeyguard)
                 revealClockLayer()
-                revealOriginalStatusBar()
                 overlay.isClickable = true
                 overlay.isFocusable = true
                 overlay.animateShow()
@@ -351,7 +337,6 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             // goes back to EXACTLY what it was (visibility + blur background).
             restoreStockStack()
             restoreClockLayers()
-            restoreOriginalStatusBar()
 
             if (animated) {
                 overlay.animateHide { hiding = false }
@@ -371,7 +356,6 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             mainHandler.removeCallbacks(suppressionTick)
             restoreStockStack()
             restoreClockLayers()
-            restoreOriginalStatusBar()
             Log.e("hideOverlay failed", t)
         }
     }
@@ -542,89 +526,6 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         } catch (_: Throwable) {
         }
         return false
-    }
-
-    /** The stock status bar view moved into our panel, with its original parent. */
-    private class MovedStatusBar(
-        val view: WeakReference<View>,
-        val parent: WeakReference<ViewGroup>,
-        val index: Int,
-    )
-
-    private var movedStatusBar: MovedStatusBar? = null
-
-    /** Finds the whole PhoneStatusBarView (id=status_bar) in the status-bar window. */
-    private fun findStatusBarView(): View? {
-        try {
-            val wmg = Class.forName("android.view.WindowManagerGlobal")
-            val inst = wmg.getMethod("getInstance").invoke(null) ?: return null
-            val views = wmg.getDeclaredField("mViews").apply { isAccessible = true }.get(inst) as? List<*> ?: return null
-            val params = wmg.getDeclaredField("mParams").apply { isAccessible = true }.get(inst) as? List<*> ?: return null
-            for (i in views.indices) {
-                val p = params.getOrNull(i) as? WindowManager.LayoutParams ?: continue
-                if (p.type != 2000) continue
-                val root = views[i] as? View ?: continue
-                val found = findStatusBarById(root, 0)
-                if (found != null) return found
-            }
-        } catch (t: Throwable) {
-            Log.e("findStatusBarView failed", t)
-        }
-        return null
-    }
-
-    private fun findStatusBarById(view: View, depth: Int): View? {
-        if (depth > 24) return null
-        try {
-            if (view.id != View.NO_ID &&
-                view.resources.getResourceEntryName(view.id) == "status_bar"
-            ) return view
-            if (view is ViewGroup) {
-                for (i in 0 until view.childCount) {
-                    val f = findStatusBarById(view.getChildAt(i), depth + 1)
-                    if (f != null) return f
-                }
-            }
-        } catch (_: Throwable) {
-        }
-        return null
-    }
-
-    private fun revealOriginalStatusBar() {
-        try {
-            val overlay = overlayRef?.get() ?: return
-            if (movedStatusBar != null) return
-            val sb = findStatusBarView() ?: return
-            val parent = sb.parent as? ViewGroup ?: return
-            val index = parent.indexOfChild(sb)
-            parent.removeView(sb)
-            val ok = overlay.setOriginalStatusBar(sb)
-            if (!ok) {
-                // Put it back if insertion failed - never leave it orphaned.
-                parent.addView(sb, index.coerceAtMost(parent.childCount))
-                return
-            }
-            movedStatusBar = MovedStatusBar(WeakReference(sb), WeakReference(parent), index)
-            Log.i("Original status bar moved into panel")
-        } catch (t: Throwable) {
-            Log.e("revealOriginalStatusBar failed", t)
-        }
-    }
-
-    private fun restoreOriginalStatusBar() {
-        val moved = movedStatusBar ?: return
-        movedStatusBar = null
-        overlayRef?.get()?.setOriginalStatusBar(null)
-        val sb = moved.view.get()
-        val parent = moved.parent.get()
-        try {
-            (sb?.parent as? ViewGroup)?.removeView(sb)
-            if (sb != null && parent != null) {
-                parent.addView(sb, moved.index.coerceAtMost(parent.childCount))
-            }
-        } catch (t: Throwable) {
-            Log.e("restoreOriginalStatusBar failed", t)
-        }
     }
 
     /** Layer 3: re-assert on every shade event while our overlay is visible. */
