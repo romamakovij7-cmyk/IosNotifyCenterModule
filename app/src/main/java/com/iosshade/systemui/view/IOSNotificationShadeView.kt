@@ -682,20 +682,37 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             // animated value. No hidden state reads, no competing sources.
             sheet.translationY = -(h - (expansion * h).coerceIn(0f, h.toFloat()))
 
-            // Cards: extra small stagger inside the moving sheet.
-            column.translationY = -(1f - expansion) * dp(60)
-            column.alpha = 0.55f + 0.45f * expansion
+            // ---- Unlock-style exit animation --------------------------------
+            // As the sheet is swiped up (expansion 1 -> 0), the notification
+            // content dissolves and the clock zooms slightly, reproducing
+            // Samsung's real lock-screen unlock feel while the wallpaper stays
+            // sharp underneath. Driven purely by `expansion`, so it is exact
+            // 1:1 with the finger and needs no keyguard / no password.
+            //
+            // closeProgress: 0 while open, ramps to 1 over the final 45% of the
+            // upward swipe (expansion 0.45 -> 0).
+            val closeProgress = ((0.45f - expansion) / 0.45f).coerceIn(0f, 1f)
+            val remain = 1f - closeProgress
 
-            // Clock scaling: grows subtly as the sheet settles (iOS proportions).
-            // Translation is NOT set here - the clock is inside `sheet`, so it
-            // inherits the sheet's 1:1 finger motion automatically.
+            // Cards: drift up and fade out as we close.
+            column.translationY = -(1f - expansion) * dp(60) - closeProgress * dp(20)
+            column.alpha = (0.55f + 0.45f * expansion) * remain
+
+            // Clock: zooms in a touch and dissolves (real Samsung depth clock).
             clockLayer?.get()?.let { clock ->
                 clock.pivotX = clock.width / 2f
                 clock.pivotY = clock.height * 0.28f
-                val scale = 0.96f + 0.04f * expansion
+                val scale = 0.96f + 0.04f * expansion + closeProgress * 0.08f
                 clock.scaleX = scale
                 clock.scaleY = scale
+                clock.alpha = remain
             }
+
+            // Wallpaper: subtle zoom-out back to rest (depth effect returning).
+            wallpaper.scaleX = 1f + closeProgress * 0.06f
+            wallpaper.scaleY = 1f + closeProgress * 0.06f
+            // Status bar fades with the rest of the shade chrome.
+            statusBar.alpha = remain
 
             // White end-line rides the rounded edge. Set alpha directly (no
             // animator allocation) during the gesture; only run a fade animator

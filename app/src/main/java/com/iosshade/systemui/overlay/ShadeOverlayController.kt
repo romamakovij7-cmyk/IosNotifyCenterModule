@@ -67,6 +67,9 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     /** Pending "restore stock after collapse" callback; cancelled if we re-open. */
     private var restoreRunnable: Runnable? = null
 
+    /** Guards the unlock signal so it fires once per close. */
+    private var unlockSignalSent = false
+
     /** True while the overlay is on screen. Read from the suppressor hook (main thread). */
     @Volatile
     private var shown = false
@@ -328,6 +331,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 // hide's end-action can fire mid-open and snap us back to GONE,
                 // briefly exposing the stock Samsung notification panel.
                 hiding = false
+                unlockSignalSent = false
                 overlay.cancelHideAnimation()
                 // Hide the stock stack FIRST, before our overlay becomes visible,
                 // so the stock panel never flashes through during the handoff.
@@ -424,9 +428,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                     restoreStockStack()
                     restoreClockLayers()
                     hiding = false
-                    // Unlock signal: panel is swiped up and collapse is complete.
-                    com.iosshade.systemui.hooks.UnlockAnimationHook.requestUnlockAnimation()
-                    Log.i("Stock restored after confirmed collapse; unlock signal sent")
+                    Log.i("Stock restored after confirmed collapse")
                 } catch (t: Throwable) {
                     restoreRunnable = null
                     shown = false
@@ -692,6 +694,13 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             try {
                 val overlay = overlayRef?.get() ?: return@post
                 if (shown || overlay.visibility != View.GONE) {
+                    // Fire the unlock animation IMMEDIATELY — the settle has already
+                    // finished and the sheet is off-screen, so no need to wait for
+                    // the delayed stock-restore polling (that caused the lag).
+                    if (!unlockSignalSent) {
+                        unlockSignalSent = true
+                        com.iosshade.systemui.hooks.UnlockAnimationHook.requestUnlockAnimation()
+                    }
                     hideOverlay(overlay, animated = false)
                 }
             } catch (_: Throwable) {
@@ -824,9 +833,8 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 for (entry in clockLayers) {
                     val v = entry.view.get() ?: continue
                     if (v.visibility != View.VISIBLE) v.visibility = View.VISIBLE
-                    // Samsung animates this view to alpha 0 over home - force it
-                    // opaque while our panel is up, otherwise the clock is invisible.
-                    if (v.alpha < 1f) v.alpha = 1f
+                    // Do NOT force alpha here: IOSNotificationShadeView.applyExpansion
+                    // drives the clock alpha for the unlock-style exit animation.
                 }
                 return
             }
