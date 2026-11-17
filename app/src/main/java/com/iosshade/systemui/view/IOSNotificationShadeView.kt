@@ -166,11 +166,12 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         scroll.addView(column, ViewGroupLayoutParams())
         sheet.addView(scroll)
 
-        // Tap on empty area = close (children like cards keep their own taps).
-        // Finger DRAG tracking is done synchronously by ControlCenterGuardHook
-        // (window-level) - NOT here - so there's a single source of truth.
+        // The scroll consumes touches so they never pass through to apps behind
+        // the shade, but a tap on EMPTY panel space must NOT dismiss the shade.
+        // Dismissal is intentional only: swipe-up (ShadeMotion settle) or the
+        // dedicated close action. Finger DRAG tracking is done synchronously by
+        // ControlCenterGuardHook (window-level) - NOT here - single source of truth.
         scroll.isClickable = true
-        scroll.setOnClickListener { closePanel() }
 
         // Transparent column: cards float directly over the plain wallpaper.
         column.orientation = LinearLayout.VERTICAL
@@ -508,6 +509,46 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             hideSafety?.let { mainHandler.removeCallbacks(it) }
             hideSafety = null
             animate().cancel()
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * Pre-warm the wallpaper drawable ONCE at attach time — never during a
+     * gesture — so the first pull never blocks on a WallpaperManager query.
+     */
+    fun prewarmWallpaper() {
+        try { refreshWallpaper() } catch (_: Throwable) {}
+    }
+
+    /**
+     * Render cards off the gesture path (called when the notification set
+     * changes while hidden). Creates views/icons once; later shows hit the
+     * key-match fast path in render(). Keeps the view GONE.
+     */
+    fun prepareContent(models: List<NotifModel>) {
+        try {
+            if (visibility == VISIBLE) return
+            render(models, animateIn = false)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * Make the already-warmed, off-screen sheet VISIBLE on ACTION_DOWN so the
+     * FIRST finger move paints immediately (no pop-in). Cheap: no DFS, no icon
+     * loading — only a visibility flip and parking at expansion 0.
+     */
+    fun showInstantly() {
+        try {
+            if (visibility == VISIBLE) return
+            animate().cancel()
+            motion.cancelSettling()
+            applyExpansion(0f, 0f, tracking = false)
+            alpha = 1f
+            scaleX = 1f
+            scaleY = 1f
+            visibility = VISIBLE
         } catch (_: Throwable) {
         }
     }

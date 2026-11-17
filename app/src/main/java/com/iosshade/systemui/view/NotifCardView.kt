@@ -55,29 +55,44 @@ class NotifCardView(
             addView(buildTextColumn())
             setOnClickListener { onTapOverride?.invoke() ?: open() }
 
-            // iOS-style swipe-up to dismiss: the card follows the finger and,
-            // once released past a threshold, flies away and is dismissed.
+            // iOS-style swipe-up to dismiss, WITH a slop threshold so an ordinary
+            // tap (open/expand) and a vertical scroll are never misread as dismiss:
+            //  - DOWN records the origin, nothing is consumed.
+            //  - MOVE only starts a dismiss-drag once the finger is clearly moving
+            //    UP past slop; before that, return false so the ScrollView scrolls.
+            //  - UP dismisses only if we actually entered the drag AND cleared the
+            //    distance threshold; otherwise it restores and stays a tap/scroll.
             var downY = 0f
-            var dismissing = false
+            var downX = 0f
+            var dragging = false
+            val slop = dp(12)
             setOnTouchListener { v, ev ->
                 try {
                     when (ev.actionMasked) {
                         android.view.MotionEvent.ACTION_DOWN -> {
                             downY = ev.rawY
+                            downX = ev.rawX
+                            dragging = false
                             false
                         }
                         android.view.MotionEvent.ACTION_MOVE -> {
                             val dy = ev.rawY - downY
-                            if (dy < 0) {
+                            val dx = ev.rawX - downX
+                            if (!dragging && dy < -slop && kotlin.math.abs(dy) > kotlin.math.abs(dx)) {
+                                dragging = true
+                            }
+                            if (dragging) {
                                 v.translationY = dy * 0.7f
                                 v.alpha = (1f + dy / dp(240)).coerceIn(0.35f, 1f)
+                                true // consumed: this is a dismiss-drag, not a scroll
+                            } else {
+                                false // let the parent ScrollView handle scrolling
                             }
-                            false
                         }
                         android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
                             val dy = ev.rawY - downY
-                            if (dy < -dp(70) && ev.actionMasked != android.view.MotionEvent.ACTION_CANCEL) {
-                                dismissing = true
+                            val cancelled = ev.actionMasked == android.view.MotionEvent.ACTION_CANCEL
+                            if (dragging && dy < -dp(70) && !cancelled) {
                                 v.animate()
                                     .translationY(-dp(300).toFloat())
                                     .alpha(0f)
@@ -92,8 +107,12 @@ class NotifCardView(
                                     .start()
                                 true
                             } else {
-                                v.animate().translationY(0f).alpha(1f).setDuration(140L).start()
-                                false
+                                if (dragging) {
+                                    v.animate().translationY(0f).alpha(1f).setDuration(140L).start()
+                                    true // consumed the drag, do NOT fire a click
+                                } else {
+                                    false // plain tap -> OnClickListener fires (open/expand)
+                                }
                             }
                         }
                         else -> false

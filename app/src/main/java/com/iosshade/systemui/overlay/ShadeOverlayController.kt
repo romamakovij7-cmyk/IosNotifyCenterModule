@@ -1,6 +1,5 @@
 package com.iosshade.systemui.overlay
 
-import android.content.Context
 import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
@@ -54,6 +53,14 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     private val hiddenStock = ArrayList<WeakReference<View>>()
 
     /**
+     * Persistent identity cache of stock stack/footer views found by the DFS.
+     * Populated ONCE per SystemUI lifetime so repeat opens skip the tree scan
+     * (lifecycle: avoid re-discovering / re-creating work on every pull).
+     */
+    private val cachedStockViews = ArrayList<WeakReference<View>>()
+    private var stockScanned = false
+
+    /**
      * Samsung chrome that must disappear while our shade is up:
      *  - CapturedBlurContainer / lock_clock_blur  -> the frosted blur
      *  - SecPanelBackground / fake_wallpaper      -> One UI's own background
@@ -67,8 +74,13 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     /** Pending "restore stock after collapse" callback; cancelled if we re-open. */
     private var restoreRunnable: Runnable? = null
 
-    /** Guards the unlock signal so it fires once per close. */
-    private var unlockSignalSent = false
+    /**
+     * True from ACTION_DOWN until the first fraction event that commits a show.
+     * The sheet is made visible instantly on DOWN (for a responsive first frame);
+     * this guard stops update() from hiding it again at fraction≈0 before the
+     * finger has actually moved.
+     */
+    private var gestureStarting = false
 
     /** True while the overlay is on screen. Read from the suppressor hook (main thread). */
     @Volatile
@@ -95,7 +107,6 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 if (searchFrom != null) collectStockStacks(searchFrom, 0)
                 reassertHidden()
                 reassertChromeHidden()
-                killShadeBlur()
                 mainHandler.postDelayed(this, 300)
             } catch (_: Throwable) {
                 // Never let the heartbeat die loudly; next show re-arms it anyway.
@@ -125,6 +136,9 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             if (view.tag != TAG_STOCK_HIDDEN) {
                 view.tag = TAG_STOCK_HIDDEN
                 hiddenStock.add(WeakReference(view))
+                if (cachedStockViews.none { it.get() === view }) {
+                    cachedStockViews.add(WeakReference(view))
+                }
                 Log.i("Suppressor pinned ${view.javaClass.simpleName}")
             }
             if (shown && view.visibility != View.INVISIBLE) {
@@ -169,6 +183,16 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 )
                 overlayRef = WeakReference(overlay)
                 rootRef = WeakReference(parent)
+                // New root (SystemUI recreated): invalidate view-discovery caches.
+                cachedStockViews.clear()
+                stockScanned = false
+                hiddenStock.clear()
+                hiddenChrome.clear()
+                chromeCollected = false
+
+                // Pre-warm the wallpaper drawable once at attach (never during a
+                // pull) so the first gesture frame never blocks on WallpaperManager.
+                overlay.prewarmWallpaper()
 
                 // Insets: apply once now (in case the listener never fires) and keep listening.
                 parent.rootWindowInsets?.let { overlay.applyWindowInsets(it) }
@@ -210,6 +234,11 @@ object ShadeOverlayController : ShadeEventBus.Listener {
 
     override fun onNotificationsChanged() {
         dirty = true
+        // Pre-render cards while hidden so the first visible frame has no view
+        // inflation / icon loading to do (off the gesture critical path).
+        if (!shown && ShadeEventBus.lastState == ShadeEventBus.STATE_SHADE) {
+            overlayRef?.get()?.prepareContent(NotifCollector.snapshot(forKeyguard = false))
+        }
         update(ShadeEventBus.lastFraction, ShadeEventBus.lastState)
     }
 
@@ -250,6 +279,26 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             val onKeyguard = state != ShadeEventBus.STATE_SHADE
             keyguard = onKeyguard
 
+            // The keyguard / PIN screen shares the SAME window and several of the
+            // same views we suppress (captured_blur_container, lock_clock_blur,
+            // header_clock, ...). The instant the state leaves SHADE we must hand
+            // ALL of them back, otherwise the PIN screen inherits hidden blur
+            // views and renders透明 / transparent. Never suppress on keyguard.
+            if (onKeyguard) {
+                restoreStockStack()
+                restoreClockLayers()
+                mainHandler.removeCallbacks(suppressionTick)
+                if (shown || overlay.visibility != View.GONE) {
+                    overlay.animate().cancel()
+                    overlay.visibility = View.GONE
+                    shown = false
+                }
+                hiding = false
+                restoreRunnable?.let { mainHandler.removeCallbacks(it) }
+                restoreRunnable = null
+                return
+            }
+
             // CONTINUOUS suppression: from the very first pixel of the pull until
             // the panel closes, keep Samsung's stack/chrome pinned. A one-shot
             // hide let One UI's layout passes re-show the stock shade mid-pull
@@ -282,6 +331,10 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             }
 
             if (!shouldShow) {
+                // A pull just started: the sheet was made visible instantly on
+                // ACTION_DOWN but fraction is still ~0. Don't yank it back; wait
+                // for the finger to either commit (fraction rises) or release.
+                if (gestureStarting && !shown && !overlay.isMotionAnimating()) return
                 if (shown || overlay.visibility != View.GONE) {
                     // If our settle animation is still running, DON'T hide now -
                     // the bus fraction drops faster than our visual sheet, and a
@@ -296,13 +349,15 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 return
             }
 
+            // A real pull has committed — the gesture-start grace period is over.
+            gestureStarting = false
+
             // Maintenance while visible: One UI occasionally flips stack visibility
             // during its own animations - put it straight back down, keep Samsung's
             // own clock revealed, the wallpaper PLAIN (no frost), and the content
             // glued to the pull.
             if (shown) {
                 reassertHidden()
-                killShadeBlur()
                 overlay.setPanelState(fraction, onKeyguard)
             }
 
@@ -331,12 +386,12 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 // hide's end-action can fire mid-open and snap us back to GONE,
                 // briefly exposing the stock Samsung notification panel.
                 hiding = false
-                unlockSignalSent = false
                 overlay.cancelHideAnimation()
-                // Hide the stock stack FIRST, before our overlay becomes visible,
-                // so the stock panel never flashes through during the handoff.
+                // warmUp() (on ACTION_DOWN) already rendered the cards and cached
+                // the wallpaper, so render() now hits the key-match fast path and
+                // animateShow() is reached quickly. Hide stock before our sheet
+                // becomes visible so it can never flash through the handoff.
                 hideStockStack()
-                killShadeBlur()
                 // Re-assert z-order: SystemUI keeps adding windows (keyguard, bouncer...).
                 rootRef?.get()?.bringChildToFront(overlay)
                 // Lift above every sibling subtree so nothing stock can draw over us.
@@ -444,43 +499,13 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     }
 
     // ------------------------------------------------------------------
-    // Wallpaper frost killer (the user wants NO blur behind the panel)
+    // NOTE: we intentionally do NOT touch the shade window's FLAG_BLUR_BEHIND
+    // or blurBehindRadius. That window (type 2040) also hosts the keyguard
+    // bouncer / PIN view (mBouncerParentView). Mutating its layout params made
+    // the PIN screen lose its blurred backdrop and turn transparent on digit
+    // entry. The plain-wallpaper look is achieved purely by hiding the in-view
+    // CapturedBlurContainer (see chrome suppression), never the window flags.
     // ------------------------------------------------------------------
-
-    /**
-     * One UI draws a frosted blur BEHIND the shade window (blur-behind radius
-     * animated with the pull). The user wants the plain wallpaper behind the
-     * notifications, so while our panel is up the blur-behind flag is removed
-     * and the radius zeroed. Samsung re-sets its window params on its own
-     * (state changes, new pulls) - we simply re-kill on every event while shown.
-     */
-    private var blurKilledLogged = false
-
-    private fun killShadeBlur() {
-        try {
-            val root = rootRef?.get() ?: return
-            val lp = root.layoutParams as? WindowManager.LayoutParams ?: return
-            var changed = false
-            if (lp.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND != 0) {
-                lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv()
-                changed = true
-            }
-            if (lp.blurBehindRadius != 0) {
-                lp.blurBehindRadius = 0
-                changed = true
-            }
-            if (changed) {
-                val wm = root.context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-                wm?.updateViewLayout(root, lp)
-                if (!blurKilledLogged) {
-                    blurKilledLogged = true
-                    Log.i("Shade blur-behind killed")
-                }
-            }
-        } catch (t: Throwable) {
-            Log.e("killShadeBlur failed", t)
-        }
-    }
 
     // ------------------------------------------------------------------
     // Stock shade suppression (three layers, tag-based, never fatal)
@@ -489,9 +514,20 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     /** Bounded DFS from the window root: matches the stack/footer by class name or resource id. */
     private fun hideStockStack() {
         try {
-            val searchFrom = rootRef?.get()?.rootView ?: return
-            if (ModuleConfig.DUMP_WINDOW_VIEWS) dumpWindowViews()
-            collectStockStacks(searchFrom, 0)
+            // Scan the tree ONCE; reuse the identity cache on every later open.
+            if (!stockScanned) {
+                val searchFrom = rootRef?.get()?.rootView ?: return
+                if (ModuleConfig.DUMP_WINDOW_VIEWS) dumpWindowViews()
+                collectStockStacks(searchFrom, 0)
+                stockScanned = true
+            }
+            // Rebuild the active suppression set from the persistent cache,
+            // skipping views that have since been GC'd / detached.
+            if (hiddenStock.isEmpty()) {
+                for (ref in cachedStockViews) {
+                    ref.get()?.let { hiddenStock.add(WeakReference(it)) }
+                }
+            }
             collectChromeOnce()
             reassertChromeHidden()
             var pinned = 0
@@ -583,7 +619,10 @@ object ShadeOverlayController : ShadeEventBus.Listener {
     private fun collectStockStacks(view: View, depth: Int) {
         if (depth > 32) return
         try {
-            if (view.tag != TAG_STOCK_HIDDEN && isStockShadeView(view)) {
+            if (isStockShadeView(view) &&
+                cachedStockViews.none { it.get() === view }
+            ) {
+                cachedStockViews.add(WeakReference(view))
                 view.tag = TAG_STOCK_HIDDEN
                 hiddenStock.add(WeakReference(view))
                 return // no need to descend into the stack itself
@@ -694,13 +733,6 @@ object ShadeOverlayController : ShadeEventBus.Listener {
             try {
                 val overlay = overlayRef?.get() ?: return@post
                 if (shown || overlay.visibility != View.GONE) {
-                    // Fire the unlock animation IMMEDIATELY — the settle has already
-                    // finished and the sheet is off-screen, so no need to wait for
-                    // the delayed stock-restore polling (that caused the lag).
-                    if (!unlockSignalSent) {
-                        unlockSignalSent = true
-                        com.iosshade.systemui.hooks.UnlockAnimationHook.requestUnlockAnimation()
-                    }
                     hideOverlay(overlay, animated = false)
                 }
             } catch (_: Throwable) {
@@ -730,9 +762,18 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                 forceHide()
                 return
             }
-            // Suppress stock synchronously (only hide the stack; do NOT reparent
-            // the clock - that happens when the overlay actually shows).
-            hideStockStack()
+            // NEVER suppress stock while the keyguard / PIN is up: the PIN screen
+            // shares the shade window's blur and clock views. Tapping a PIN digit
+            // reaches this hook (shade window dispatchTouchEvent); hiding stock
+            // there made the PIN backdrop transparent.
+            if (keyguard || ShadeEventBus.lastState != ShadeEventBus.STATE_SHADE) return
+
+            // Make the already-warmed sheet visible on ACTION_DOWN (cheap: no DFS,
+            // no icon loading) so the FIRST move paints immediately. Content was
+            // pre-rendered on notification changes; wallpaper at attach.
+            val overlay = overlayRef?.get() ?: return
+            gestureStarting = true
+            overlay.showInstantly()
         } catch (_: Throwable) {
         }
     }
@@ -747,7 +788,22 @@ object ShadeOverlayController : ShadeEventBus.Listener {
 
     /** Called on ACTION_UP; the settle was already started by onFingerRelease. */
     fun onGestureUp() {
-        // Intentionally empty.
+        // A tap that never committed a pull leaves the sheet visible-but-parked
+        // from showInstantly(); hand it back to stock cleanly.
+        mainHandler.post {
+            try {
+                if (gestureStarting && !shown) {
+                    gestureStarting = false
+                    val overlay = overlayRef?.get() ?: return@post
+                    if (overlay.visibility != View.GONE && !overlay.isMotionAnimating()) {
+                        overlay.animate().cancel()
+                        overlay.visibility = View.GONE
+                    }
+                    restoreStockStack()
+                }
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     /**
