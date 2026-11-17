@@ -252,6 +252,11 @@ object ShadeOverlayController : ShadeEventBus.Listener {
 
             if (!shouldShow) {
                 if (shown || overlay.visibility != View.GONE) {
+                    // If our settle animation is still running, DON'T hide now -
+                    // the bus fraction drops faster than our visual sheet, and a
+                    // premature hide skips the close animation ("closes instantly").
+                    // onSettleEnd() will hide once the sheet is really off-screen.
+                    if (overlay.isMotionAnimating()) return
                     hideOverlay(overlay, animated = true)
                 } else if (hiddenStock.isNotEmpty()) {
                     // A previous hide may have been interrupted mid-flight.
@@ -546,6 +551,19 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         } catch (_: Throwable) {
         }
         return false
+    }
+
+    /** Called by ShadeMotion when a close settle finishes: now hide the overlay. */
+    fun onSettledClosed() {
+        mainHandler.post {
+            try {
+                val overlay = overlayRef?.get() ?: return@post
+                if (shown || overlay.visibility != View.GONE) {
+                    hideOverlay(overlay, animated = false)
+                }
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     /** Current absolute sheet offset in px (for the touch hook's DOWN baseline). */

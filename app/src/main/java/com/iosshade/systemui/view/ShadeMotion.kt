@@ -32,6 +32,8 @@ class ShadeMotion(context: Context, private val host: Host) {
         fun onExpansionChanged(expansion: Float, velocity: Float, tracking: Boolean)
         /** Drive the stock panel so it never fights our authoritative value. */
         fun onDriveStock(fraction: Float)
+        /** Called once when a settle animation reaches its target. */
+        fun onSettleEnd(target: Float) {}
         /** Content can still scroll down (so an upward swipe must scroll, not close). */
         fun canScrollContentDown(): Boolean
         /** Screen height in px, used to convert drag distance to expansion. */
@@ -171,6 +173,7 @@ class ShadeMotion(context: Context, private val host: Host) {
         if (abs(target - start) < 0.001f) {
             setExpansion(target, 0f, tracking = false)
             host.onDriveStock(target)
+            host.onSettleEnd(target)
             return
         }
         val distance = abs(target - start)
@@ -190,6 +193,7 @@ class ShadeMotion(context: Context, private val host: Host) {
                     // Snap to the exact target so no rounding gap remains.
                     setExpansion(target, 0f, tracking = false)
                     host.onDriveStock(target)
+                    host.onSettleEnd(target)
                 }
                 override fun onAnimationCancel(a: android.animation.Animator) {
                     if (settling == a) settling = null

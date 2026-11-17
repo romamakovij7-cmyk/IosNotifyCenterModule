@@ -73,6 +73,12 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             // overlay only mirrors it visually.
         }
 
+        override fun onSettleEnd(target: Float) {
+            if (target <= 0.001f) {
+                com.iosshade.systemui.overlay.ShadeOverlayController.onSettledClosed()
+            }
+        }
+
         override fun canScrollContentDown(): Boolean = scroll.canScrollVertically(1)
 
         override fun screenHeight(): Int = resources.displayMetrics.heightPixels
@@ -661,6 +667,9 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         if (com.iosshade.systemui.core.FingerTracker.active) return
         motion.onExternalFraction(fraction)
     }
+
+    /** True while a settle/fling animation owns the sheet. */
+    fun isMotionAnimating(): Boolean = motion.isAnimating
 
     /** Current absolute sheet offset in px (expansion * screen height). */
     fun currentOffsetPx(): Float = motion.expansion * screenHeightPx
