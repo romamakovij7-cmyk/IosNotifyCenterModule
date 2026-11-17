@@ -631,6 +631,44 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     }
 
     /**
+     * Shows the REAL stock status bar instead of our drawn one.
+     * Returns true if inserted successfully.
+     */
+    fun setOriginalStatusBar(real: View?): Boolean {
+        return try {
+            if (real != null) {
+                statusBar.visibility = GONE
+                // Add to ROOT (not the moving sheet) at the very top.
+                addView(
+                    real,
+                    0,
+                    LayoutParams(LayoutParams.MATCH_PARENT, dp(34), Gravity.TOP)
+                )
+                real.tag = "iosshade_original_statusbar"
+            } else {
+                // Remove any marked original bar from the root.
+                for (i in childCount - 1 downTo 0) {
+                    val c = getChildAt(i)
+                    if (c.tag == "iosshade_original_statusbar") removeView(c)
+                }
+                statusBar.visibility = VISIBLE
+            }
+            true
+        } catch (t: Throwable) {
+            Log.e("setOriginalStatusBar failed", t)
+            false
+        }
+    }
+
+    /** Feeds a shade-window touch into our motion (for the opening gesture). */
+    fun onGestureTouch(ev: android.view.MotionEvent) {
+        try {
+            motion.onTouch(ev)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
      * Feed the stock panel's expansion into [motion]. When our own gesture is
      * driving, motion ignores these (it is authoritative); otherwise it mirrors
      * Samsung so a pull started on the status bar still opens our panel.
