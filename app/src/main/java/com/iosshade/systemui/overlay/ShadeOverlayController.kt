@@ -727,7 +727,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         chromeCollected = false
     }
 
-    /** Called by ShadeMotion when a close settle finishes: play the unlock-style close. */
+    /** Called by ShadeMotion when a close settle finishes: now hide the overlay. */
     fun onSettledClosed() {
         mainHandler.post {
             try {

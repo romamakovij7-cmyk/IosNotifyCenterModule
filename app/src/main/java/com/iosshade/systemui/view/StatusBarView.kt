@@ -25,6 +25,44 @@ class StatusBarView(context: Context) : View(context) {
 
     private val d = resources.displayMetrics.density
 
+    /**
+     * Height of the system status-bar strip, derived from real WindowInsets
+     * (max of statusBars + displayCutout top). Edge-to-edge windows report a
+     * statusBars inset of 0 but still carry a displayCutout top, so we take the
+     * max. This guarantees the bar occupies the real top strip instead of a
+     * hardcoded dp(30) that gets clipped by the cutout / punched-out camera.
+     */
+    private var topInsetPx: Int = 0
+
+    fun setTopInset(px: Int) {
+        if (px == topInsetPx) return
+        topInsetPx = px
+        requestLayout()
+        invalidate()
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        // Always size the bar to the actual status-bar strip height. A plain
+        // View with no onMeasure can measure to 0 during early edge-to-edge
+        // layout passes, collapsing cy and pushing icons above the screen top.
+        val h = if (topInsetPx > 0) {
+            topInsetPx
+        } else {
+            // Fallback: system status_bar_height dimen, never below 24dp.
+            val fallback = try {
+                val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+                if (id > 0) resources.getDimensionPixelSize(id) else 0
+            } catch (_: Throwable) {
+                0
+            }
+            maxOf(fallback, (24 * d).toInt())
+        }
+        setMeasuredDimension(
+            android.view.View.resolveSize(suggestedMinimumWidth, widthMeasureSpec),
+            h
+        )
+    }
+
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFFFFFFF.toInt()
         typeface = Fonts.semiBold(context)

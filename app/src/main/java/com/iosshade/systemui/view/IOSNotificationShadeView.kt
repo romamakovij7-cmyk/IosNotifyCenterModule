@@ -141,10 +141,12 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
 
         // iOS-style status bar on the ROOT (not the sheet) so it stays pinned
         // at the top regardless of the sheet's finger-tracked translation.
+        // WRAP_CONTENT: StatusBarView.onMeasure sizes itself to the real
+        // status-bar/cutout inset (see setTopInset), never a hardcoded height.
         try {
             addView(
                 statusBar,
-                LayoutParams(LayoutParams.MATCH_PARENT, dp(30), Gravity.TOP)
+                LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.TOP)
             )
         } catch (t: Throwable) {
             Log.e("statusBar init failed", t)
@@ -661,9 +663,20 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 WindowInsets.Type.navigationBars() or
                 WindowInsets.Type.displayCutout()
             val safe = insets.getInsets(mask)
+
+            // In edge-to-edge windows the statusBars inset alone is often 0;
+            // the punch-hole / display cutout still occupies the top strip.
+            // Take the MAX of both so the custom bar covers the real strip and
+            // its glyphs sit fully on-screen, clear of the camera cutout.
+            val sbTop = insets.getInsets(WindowInsets.Type.statusBars()).top
+            val cutTop = insets.getInsets(WindowInsets.Type.displayCutout()).top
+            val statusTop = maxOf(sbTop, cutTop, safe.top, (24f * density).toInt())
+            statusBar.setTopInset(statusTop)
+
             // Padding goes on the INNER content column, not the root: the sheet
             // must cover the whole screen so its rounded bottom clip is exact.
-            column.setPadding(dp(16), safe.top + dp(4), dp(16), dp(16) + safe.bottom)
+            // Start content below the status bar strip + a small gap.
+            column.setPadding(dp(16), statusTop + dp(4), dp(16), dp(16) + safe.bottom)
         } catch (t: Throwable) {
             Log.e("applyWindowInsets failed", t)
         }
