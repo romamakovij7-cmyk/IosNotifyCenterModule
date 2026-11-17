@@ -424,11 +424,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
                     restoreStockStack()
                     restoreClockLayers()
                     hiding = false
-                    // Real Samsung lock-screen unlock animation after close.
-                    if (!keyguard) {
-                        com.iosshade.systemui.hooks.UnlockAnimationHook.playUnlockAnimation()
-                    }
-                    Log.i("Stock restored; unlock animation requested")
+                    Log.i("Stock restored after confirmed collapse")
                 } catch (t: Throwable) {
                     restoreRunnable = null
                     shown = false
@@ -688,7 +684,7 @@ object ShadeOverlayController : ShadeEventBus.Listener {
         chromeCollected = false
     }
 
-    /** Called by ShadeMotion when a close settle finishes: now hide the overlay. */
+    /** Called by ShadeMotion when a close settle finishes: play the unlock-style close. */
     fun onSettledClosed() {
         mainHandler.post {
             try {

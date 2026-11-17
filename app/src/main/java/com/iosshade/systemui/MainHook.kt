@@ -8,7 +8,6 @@ import com.iosshade.systemui.hooks.PanelExpansionHook
 import com.iosshade.systemui.hooks.ShadeOverlayHook
 import com.iosshade.systemui.hooks.ControlCenterGuardHook
 import com.iosshade.systemui.hooks.ClockForceHook
-import com.iosshade.systemui.hooks.UnlockAnimationHook
 
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.IXposedHookZygoteInit
@@ -70,7 +69,6 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
             installGroup("ControlCenterGuardHook") { ControlCenterGuardHook(lpparam).install() }
             installGroup("ExpandMotionHook") { com.iosshade.systemui.hooks.ExpandMotionHook(lpparam).install() }
             installGroup("ClockForceHook") { ClockForceHook(lpparam).install() }
-            installGroup("UnlockAnimationHook") { UnlockAnimationHook(lpparam).install() }
 
             Log.i("All hook groups installed. Review WARN/ERROR lines above for One UI 9 calibration.")
         } catch (t: Throwable) {
