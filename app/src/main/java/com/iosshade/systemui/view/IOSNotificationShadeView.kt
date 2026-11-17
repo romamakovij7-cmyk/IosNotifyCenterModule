@@ -48,6 +48,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     private val edgeView = FrameLayout(context)
     /** The sheet itself: clipped to a rounded-bottom shape (the visible end). */
     private val sheet = FrameLayout(context)
+    private val statusBar = StatusBarView(context)
     private var blurredWallpaper: android.graphics.Bitmap? = null
     private var torchButton: FrameLayout? = null
     private var torchOn = false
@@ -130,6 +131,16 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             sheet.addView(wallpaper, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         } catch (t: Throwable) {
             Log.e("wallpaper init failed", t)
+        }
+
+        // iOS-style status bar on top of the sheet (drawn by us).
+        try {
+            sheet.addView(
+                statusBar,
+                LayoutParams(LayoutParams.MATCH_PARENT, dp(30), Gravity.TOP)
+            )
+        } catch (t: Throwable) {
+            Log.e("statusBar init failed", t)
         }
 
         // Transparent backdrop: the wallpaper shows through fully (the user asked for
@@ -536,6 +547,7 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
             motion.cancelSettling()
             pivotY = 0f
             refreshWallpaper()
+            statusBar.updateTime()
             edgeView.animate().cancel()
             edgeView.alpha = 0f
             // The CLOCK must stay put (static, like the real lock screen).
