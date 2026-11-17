@@ -640,15 +640,24 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
      * The ONLY place that writes transforms. Every element derives from the one
      * authoritative [expansion], so finger tracking, fling settle and stock
      * mirroring all look identical - no competing animation systems.
+     *
+     * [heightPx] is the stock panel's real expansion height; when available it
+     * drives the sheet translation 1:1 (fraction*screenHeight over-shoots because
+     * One UI's maxPanelHeight is smaller than the screen).
      */
     private fun applyExpansion(expansion: Float, velocity: Float, tracking: Boolean) {
         try {
             val h = if (height > 0) height else resources.displayMetrics.heightPixels
 
-            // The FULL-SCREEN sheet slides down from ABOVE as it opens and up
-            // as it closes - symmetric, finger-tracked motion in both directions.
-            // fraction now comes purely from setExpandedFraction (no 1.0 jump).
-            val sheetY = -(1f - expansion) * h
+            // Translate so the sheet's bottom edge follows the finger 1:1.
+            // Use the REAL expanded height (px) when available - fraction*screenHeight
+            // over-shoots because One UI's maxPanelHeight < screen height.
+            val stockPx = com.iosshade.systemui.core.ShadeEventBus.lastExpandedHeightPx
+            val sheetY = if (stockPx >= 0f && h > 0) {
+                -(h - stockPx.coerceIn(0f, h.toFloat()))
+            } else {
+                -(1f - expansion) * h
+            }
             sheet.translationY = sheetY
 
             // Cards: extra small stagger inside the moving sheet.

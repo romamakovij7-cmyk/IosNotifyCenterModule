@@ -225,6 +225,11 @@ class PanelExpansionHook(private val lpparam: LoadPackageParam) {
                 val fraction = readFraction(param.thisObject) ?: return
                 rememberPanel(param.thisObject)
                 ShadeEventBus.postExpandedFraction(fraction)
+                // One UI's maxPanelHeight differs from the screen height, so
+                // fraction*screenHeight over-shoots the finger. Publish the real
+                // expanded height (px) for exact 1:1 sheet tracking.
+                val heightPx = readExpandedHeight(param.thisObject)
+                if (heightPx != null) ShadeEventBus.postExpandedHeight(heightPx)
             } catch (t: Throwable) {
                 Log.e("fractionFromField hook failed (${param.method.name})", t)
             }
@@ -246,6 +251,22 @@ class PanelExpansionHook(private val lpparam: LoadPackageParam) {
 
     private fun readFraction(target: Any?): Float? =
         (SafeXposed.findFieldValue(target, FRACTION_FIELDS) as? Float)
+
+    /** Reads the panel's real expansion height in px (AOSP: mExpandedHeight). */
+    private val HEIGHT_FIELDS = listOf(
+        "mExpandedHeight", "mExpandedHeightInternal", "expandedHeight", "mCurrentExpandedHeight"
+    )
+
+    private fun readExpandedHeight(target: Any?): Float? {
+        val v = SafeXposed.findFieldValue(target, HEIGHT_FIELDS) ?: return null
+        return when (v) {
+            is Float -> v
+            is Int -> v.toFloat()
+            is Double -> v.toFloat()
+            is Long -> v.toFloat()
+            else -> null
+        }
+    }
 
     private fun rememberPanel(target: Any?) {
         if (target == null) return

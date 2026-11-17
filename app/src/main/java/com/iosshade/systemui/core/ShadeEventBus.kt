@@ -37,6 +37,16 @@ object ShadeEventBus {
     var lastFraction: Float = 0f
         private set
 
+    /**
+     * The stock panel's expansion HEIGHT in pixels (mExpandedHeight), published
+     * alongside fraction. Using real px instead of fraction*screenHeight keeps
+     * the overlay glued 1:1 to the finger (One UI's maxPanelHeight != screen).
+     * -1 means "unknown" -> fall back to fraction.
+     */
+    @Volatile
+    var lastExpandedHeightPx: Float = -1f
+        private set
+
     @Volatile
     var lastState: Int = STATE_SHADE
         private set
@@ -66,6 +76,11 @@ object ShadeEventBus {
                     .onFailure { Log.e("Listener.onExpandedFractionChanged failed", it) }
             }
         }
+    }
+
+    /** Publish the real expanded height (px) from setExpandedHeightInternal. */
+    fun postExpandedHeight(px: Float) {
+        lastExpandedHeightPx = px
     }
 
     fun postState(state: Int) {
