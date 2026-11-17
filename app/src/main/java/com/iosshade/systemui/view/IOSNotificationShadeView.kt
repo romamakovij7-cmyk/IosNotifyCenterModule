@@ -50,7 +50,6 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     private val sheet = FrameLayout(context)
     private val statusBar = StatusBarView(context)
     private var blurredWallpaper: android.graphics.Bitmap? = null
-    private var wallpaperBlurReady = false
     private var torchButton: FrameLayout? = null
     private var torchOn = false
     private var lockButtonsRow: View? = null
@@ -231,70 +230,18 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
     }
 
     // ------------------------------------------------------------------
-    // Refresh the wallpaper background so it covers One UI's blurred home
-    // screen behind the shade. Called on every show (cheap - cached bitmap).
+    // Wallpaper: drawn SHARP so it covers One UI's frosted/blurred home layer.
+    // No blur computation at all - the glass buttons use a clean translucent
+    // tint (liquid glass postponed), so no background blur is produced by us.
     // ------------------------------------------------------------------
     private fun refreshWallpaper() {
         try {
             val wm = android.app.WallpaperManager.getInstance(context)
             val drawable = wm.drawable ?: return
             wallpaper.setImageDrawable(drawable)
-
-            // The blurred copy is only for the glass buttons. Build it ONCE per
-            // session (the wallpaper doesn't change) - rebuilding it every show
-            // cost ~30ms on the main thread at the start of every pull.
-            if (wallpaperBlurReady && blurredWallpaper != null) return
-            val w = resources.displayMetrics.widthPixels
-            val h = resources.displayMetrics.heightPixels
-            val sharp = android.graphics.Bitmap.createBitmap(
-                w, h, android.graphics.Bitmap.Config.ARGB_8888
-            )
-            val c = android.graphics.Canvas(sharp)
-            val iw = drawable.intrinsicWidth.coerceAtLeast(1)
-            val ih = drawable.intrinsicHeight.coerceAtLeast(1)
-            val scale = maxOf(w.toFloat() / iw, h.toFloat() / ih)
-            val dw = (iw * scale).toInt()
-            val dh = (ih * scale).toInt()
-            drawable.setBounds((w - dw) / 2, (h - dh) / 2, (w + dw) / 2, (h + dh) / 2)
-            drawable.draw(c)
-
-            // Cheap separable box blur on a downscaled copy: same visual result
-            // as a backdrop blur, no API-level RenderNode dependency.
-            val sw = (w / 8).coerceAtLeast(2)
-            val sh = (h / 8).coerceAtLeast(2)
-            val small = android.graphics.Bitmap.createScaledBitmap(sharp, sw, sh, true)
-            val px = IntArray(sw * sh)
-            small.getPixels(px, 0, sw, 0, 0, sw, sh)
-            val tmp = IntArray(px.size)
-            val out = IntArray(px.size)
-            val r = 3
-            for (y in 0 until sh) {
-                for (x in 0 until sw) {
-                    var a = 0; var rr = 0; var g = 0; var b = 0; var n = 0
-                    for (k in -r..r) {
-                        val xx = (x + k).coerceIn(0, sw - 1)
-                        val p = px[y * sw + xx]
-                        a += p ushr 24; rr += (p shr 16) and 0xFF
-                        g += (p shr 8) and 0xFF; b += p and 0xFF; n++
-                    }
-                    tmp[y * sw + x] = (a / n shl 24) or (rr / n shl 16) or (g / n shl 8) or (b / n)
-                }
-            }
-            for (y in 0 until sh) {
-                for (x in 0 until sw) {
-                    var a = 0; var rr = 0; var g = 0; var b = 0; var n = 0
-                    for (k in -r..r) {
-                        val yy = (y + k).coerceIn(0, sh - 1)
-                        val p = tmp[yy * sw + x]
-                        a += p ushr 24; rr += (p shr 16) and 0xFF
-                        g += (p shr 8) and 0xFF; b += p and 0xFF; n++
-                    }
-                    out[y * sw + x] = (a / n shl 24) or (rr / n shl 16) or (g / n shl 8) or (b / n)
-                }
-            }
-            small.setPixels(out, 0, sw, 0, 0, sw, sh)
-            blurredWallpaper = android.graphics.Bitmap.createScaledBitmap(small, w, h, true)
-            wallpaperBlurReady = true
+            // Small dark filter: a light dim over the wallpaper (no frost/blur).
+            wallpaper.setColorFilter(0x1A000000, android.graphics.PorterDuff.Mode.SRC_OVER)
+            blurredWallpaper = null
         } catch (t: Throwable) {
             Log.w("refreshWallpaper failed: ${t.message}")
         }
