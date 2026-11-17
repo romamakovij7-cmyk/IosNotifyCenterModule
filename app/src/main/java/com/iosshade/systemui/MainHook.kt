@@ -7,7 +7,7 @@ import com.iosshade.systemui.hooks.StockShadeSuppressorHook
 import com.iosshade.systemui.hooks.PanelExpansionHook
 import com.iosshade.systemui.hooks.ShadeOverlayHook
 import com.iosshade.systemui.hooks.ControlCenterGuardHook
-import com.iosshade.systemui.hooks.ClockForceHook
+
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.IXposedHookZygoteInit
 import de.robv.android.xposed.IXposedHookZygoteInit.StartupParam

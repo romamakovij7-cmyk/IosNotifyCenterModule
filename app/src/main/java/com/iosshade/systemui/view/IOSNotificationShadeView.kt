@@ -635,18 +635,23 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
         try {
             val h = if (height > 0) height else resources.displayMetrics.heightPixels
 
-            // THE WHOLE SHEET FOLLOWS THE FINGER. At expansion 0 the content
-            // sits one screen ABOVE; at 1 it is in place. The sheet is always
-            // full-screen so the scroll view and buttons keep their full height.
-            val sheetY = -(1f - expansion) * h
-            wallpaper.translationY = sheetY
-            scroll.translationY = sheetY
-            lockButtonsRow?.translationY = sheetY
-            clockLayer?.get()?.let { it.translationY = sheetY - dp(42) }
+            // Full-screen sheet: no ugly gap at the bottom. The rounded bottom
+            // is only visible DURING the pull (partial expansion), when the
+            // sheet's edge is still on-screen; at full expansion it fills the
+            // screen exactly like iOS.
+            val sheetBottom = (expansion * h).toInt().coerceAtLeast(dp(60))
+            val lp = sheet.layoutParams as? LayoutParams
+            if (lp != null && lp.height != sheetBottom) {
+                lp.height = sheetBottom
+                sheet.layoutParams = lp
+            }
 
             // Cards: extra small stagger inside the moving sheet.
             column.translationY = -(1f - expansion) * dp(60)
             column.alpha = 0.55f + 0.45f * expansion
+
+            // Clock sits slightly higher than the cards (depth-effect clearance).
+            clockLayer?.get()?.let { it.translationY = -dp(42).toFloat() }
 
             // Clock scaling: grows subtly as the sheet settles (iOS proportions).
             clockLayer?.get()?.let { clock ->
@@ -657,9 +662,8 @@ class IOSNotificationShadeView(context: android.content.Context) : FrameLayout(c
                 clock.scaleY = scale
             }
 
-            // White end-line: Gravity.BOTTOM inside the sheet + follows the
-            // finger, visible only while opening/closing.
-            edgeView.translationY = sheetY
+            // White end-line is pinned to the sheet bottom (Gravity.BOTTOM),
+            // so it rides the rounded edge automatically - no manual Y.
             val moving = (tracking || motion.isAnimating) &&
                 expansion >= 0.03f && expansion <= 0.98f
             if (moving) {
