@@ -9,84 +9,85 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
+import android.telephony.TelephonyManager
 import android.view.View
-import android.widget.TextView
 import com.iosshade.systemui.core.Fonts
 import java.text.SimpleDateFormat
 import java.util.Locale
 
 /**
- * An iOS-style status bar drawn by us (the stock one is hidden by One UI when
- * the shade is open). Layout mirrors the reference screenshot:
+ * iOS-style status bar drawn by us (the stock one is hidden when the shade is open).
  *
- *   left:  14:12   ➤ 🔒 ✕ ✕
- *   right: ▂▄▆  ◡   [33%]
+ *   left:  14:17   KYIVSTAR
+ *   right: ▂▄▆█  ◡   [34│]
  */
 class StatusBarView(context: Context) : View(context) {
 
-    private val timeView = TextView(context).apply {
-        textSize = 15f
-        typeface = Fonts.semiBold(context)
-        setTextColor(0xFFFFFFFF.toInt())
-        includeFontPadding = false
-    }
+    private val d = resources.displayMetrics.density
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFFFFFFF.toInt()
-        textSize = 15f * resources.displayMetrics.density
         typeface = Fonts.semiBold(context)
-        textAlign = Paint.Align.RIGHT
+        textAlign = Paint.Align.LEFT
     }
-    private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val carrierPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xB3FFFFFF.toInt()
+        typeface = Fonts.regular(context)
+        textAlign = Paint.Align.LEFT
+    }
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFFFFFFF.toInt()
         style = Paint.Style.FILL
     }
-    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFFFFFFF.toInt()
         style = Paint.Style.STROKE
     }
 
     private var batteryPct = 0
-    private var batteryCharging = false
-    private var wifiLevel = 4 // 0..4
-    private var cellularLevel = 4 // 0..4
+    private var charging = false
+    private var wifiLevel = 4
+    private var carrier: String = ""
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
-            when (intent.action) {
-                Intent.ACTION_BATTERY_CHANGED -> {
-                    val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-                    val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
-                    batteryPct = if (level >= 0 && scale > 0) level * 100 / scale else 0
-                    batteryCharging = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ==
-                        BatteryManager.BATTERY_STATUS_CHARGING
-                    invalidate()
-                }
+            if (intent.action == Intent.ACTION_BATTERY_CHANGED) {
+                val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
+                batteryPct = if (level >= 0 && scale > 0) level * 100 / scale else 0
+                charging = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ==
+                    BatteryManager.BATTERY_STATUS_CHARGING
+                invalidate()
             }
         }
     }
 
     init {
-        val pad = (16 * resources.displayMetrics.density).toInt()
-        setPadding(pad, (10 * resources.displayMetrics.density).toInt(), pad, 0)
-        // Initial battery state (sticky broadcast).
+        val pad = (18 * d).toInt()
+        setPadding(pad, (9 * d).toInt(), pad, 0)
+
         try {
             val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             intent?.let {
                 val level = it.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
                 val scale = it.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
                 batteryPct = if (level >= 0 && scale > 0) level * 100 / scale else 0
+                charging = it.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ==
+                    BatteryManager.BATTERY_STATUS_CHARGING
             }
         } catch (_: Throwable) {
         }
         try {
             val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            wm?.let {
-                val rssi = it.connectionInfo.rssi
-                wifiLevel = WifiManager.calculateSignalLevel(rssi, 5).coerceIn(0, 4)
-            }
+            wm?.let { wifiLevel = WifiManager.calculateSignalLevel(it.connectionInfo.rssi, 5).coerceIn(0, 4) }
         } catch (_: Throwable) {
         }
+        try {
+            val tm = context.applicationContext.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+            carrier = tm?.networkOperatorName?.takeIf { it.isNotBlank() } ?: ""
+        } catch (_: Throwable) {
+        }
+        if (carrier.isBlank()) carrier = "KYIVSTAR"
     }
 
     override fun onAttachedToWindow() {
@@ -105,113 +106,90 @@ class StatusBarView(context: Context) : View(context) {
         super.onDetachedFromWindow()
     }
 
-    fun updateTime() {
-        try {
-            timeView.text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(java.util.Date())
-            invalidate()
-        } catch (_: Throwable) {
-        }
-    }
+    fun updateTime() = invalidate()
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val h = height.toFloat()
-        val cy = paddingTop + (h - paddingTop) / 2f
-        val d = resources.displayMetrics.density
+        val cy = paddingTop + (height - paddingTop) / 2f
 
-        // --- LEFT: time + small status glyphs ---
-        val timeText = try {
+        // ---- LEFT: time (bold white) + carrier name (soft) ----
+        val time = try {
             SimpleDateFormat("HH:mm", Locale.getDefault()).format(java.util.Date())
         } catch (_: Throwable) {
             "00:00"
         }
-        textPaint.textAlign = Paint.Align.LEFT
         textPaint.textSize = 15f * d
-        canvas.drawText(timeText, paddingLeft.toFloat(), cy + 5f * d, textPaint)
-        var x = paddingLeft + timeView.paint.measureText(timeText) + 10f * d
+        canvas.drawText(time, paddingLeft.toFloat(), cy + 5.5f * d, textPaint)
 
-        // location arrow
-        drawArrow(canvas, x + 6f * d, cy, 6f * d)
-        x += 18f * d
-        // cross / precise-location / rotation glyphs (small filled shapes)
-        drawStar(canvas, x + 5f * d, cy, 5f * d)
-        x += 16f * d
-        drawX(canvas, x + 5f * d, cy, 5f * d)
-        x += 16f * d
-        drawX(canvas, x + 5f * d, cy, 5f * d)
+        val timeW = textPaint.measureText(time)
+        carrierPaint.textSize = 12f * d
+        canvas.drawText(carrier, paddingLeft + timeW + 9f * d, cy + 4.5f * d, carrierPaint)
 
-        // --- RIGHT: cellular, wifi, battery with % ---
-        val right = (width - paddingRight).toFloat()
-        var rx = right
-        // Battery pill with percentage inside (green when charging).
-        val bw = 30f * d
-        val bh = 15f * d
-        val battRect = RectF(rx - bw, cy - bh / 2, rx, cy + bh / 2)
-        iconPaint.color = if (batteryCharging) 0xFF34C759.toInt() else 0x33FFFFFF
-        canvas.drawRoundRect(battRect, 4f * d, 4f * d, iconPaint)
-        val pctText = "$batteryPct"
+        // ---- RIGHT: cellular bars, wifi, battery pill with % ----
+        var rx = (width - paddingRight).toFloat()
+        drawBattery(canvas, rx, cy)
+        rx -= 38f * d
+        drawWifi(canvas, rx, cy)
+        rx -= 22f * d
+        drawCellular(canvas, rx, cy)
+    }
+
+    /** Battery: rounded pill with a % inside + a small terminal nub. */
+    private fun drawBattery(canvas: Canvas, right: Float, cy: Float) {
+        val bw = 27f * d
+        val bh = 14f * d
+        val r = 4f * d
+        val left = right - bw
+        val top = cy - bh / 2
+        val rect = RectF(left, top, right, cy + bh / 2)
+
+        fill.color = if (charging) 0xFF34C759.toInt() else 0x2EFFFFFF
+        canvas.drawRoundRect(rect, r, r, fill)
+
+        // terminal nub
+        fill.color = 0xFFFFFFFF.toInt()
+        canvas.drawRoundRect(
+            RectF(right + 1.5f * d, cy - 4f * d, right + 3.5f * d, cy + 4f * d),
+            1f * d, 1f * d, fill
+        )
+
         textPaint.textAlign = Paint.Align.CENTER
-        textPaint.textSize = 11f * d
+        textPaint.textSize = 10.5f * d
         textPaint.color = 0xFF000000.toInt()
-        canvas.drawText(pctText, rx - bw / 2, cy + 4f * d, textPaint)
+        canvas.drawText("$batteryPct", left + bw / 2, cy + 3.8f * d, textPaint)
         textPaint.color = 0xFFFFFFFF.toInt()
-        rx -= bw + 8f * d
-
-        // Wifi arc
-        drawWifi(canvas, rx - 8f * d, cy, 8f * d)
-        rx -= 20f * d
-
-        // Cellular bars (4 bars + triangle)
-        drawCellular(canvas, rx - 9f * d, cy, 9f * d)
+        textPaint.textAlign = Paint.Align.LEFT
     }
 
-    private fun drawArrow(canvas: Canvas, cx: Float, cy: Float, s: Float) {
-        val p = android.graphics.Path().apply {
-            moveTo(cx, cy - s)
-            lineTo(cx + s, cy + s * 0.6f)
-            lineTo(cx, cy + s * 0.2f)
-            lineTo(cx - s, cy + s * 0.6f)
-            close()
-        }
-        canvas.drawPath(p, iconPaint)
-    }
-
-    private fun drawStar(canvas: Canvas, cx: Float, cy: Float, s: Float) {
-        iconPaint.style = Paint.Style.STROKE
-        strokePaint.strokeWidth = 1.5f * resources.displayMetrics.density
-        canvas.drawCircle(cx, cy, s, strokePaint)
-        canvas.drawLine(cx - s, cy, cx + s, cy, strokePaint)
-        canvas.drawLine(cx, cy - s, cx, cy + s, strokePaint)
-        iconPaint.style = Paint.Style.FILL
-    }
-
-    private fun drawX(canvas: Canvas, cx: Float, cy: Float, s: Float) {
-        strokePaint.strokeWidth = 1.6f * resources.displayMetrics.density
-        canvas.drawLine(cx - s, cy - s, cx + s, cy + s, strokePaint)
-        canvas.drawLine(cx + s, cy - s, cx - s, cy + s, strokePaint)
-    }
-
-    private fun drawWifi(canvas: Canvas, right: Float, cy: Float, s: Float) {
-        val paint = strokePaint
-        paint.strokeWidth = 2f * resources.displayMetrics.density
+    /** Wifi: three clean arcs + a base dot. */
+    private fun drawWifi(canvas: Canvas, cx: Float, cy: Float) {
+        stroke.strokeWidth = 2.1f * d
+        stroke.color = 0xFFFFFFFF.toInt()
+        val radii = floatArrayOf(3.2f, 5.6f, 8f)
         for (i in 0 until 3) {
-            val r = s * (0.3f + i * 0.3f)
+            val rr = radii[i] * d
             canvas.drawArc(
-                RectF(right - r, cy - r, right + r, cy + r),
-                200f, 140f, false, paint
+                RectF(cx - rr, cy - rr + 1f * d, cx + rr, cy + rr + 1f * d),
+                205f, 130f, false, stroke
             )
         }
-        iconPaint.style = Paint.Style.FILL
-        canvas.drawCircle(right, cy + s * 0.6f, 2f * resources.displayMetrics.density, iconPaint)
+        fill.color = 0xFFFFFFFF.toInt()
+        canvas.drawCircle(cx, cy + 3.4f * d, 1.9f * d, fill)
     }
 
-    private fun drawCellular(canvas: Canvas, right: Float, cy: Float, s: Float) {
-        val bars = 4
-        for (i in 0 until bars) {
-            val bh = s * (0.35f + i * 0.22f)
-            val bw = 2.5f * resources.displayMetrics.density
-            val x = right - (bars - 1 - i) * (bw + 2f * resources.displayMetrics.density)
-            canvas.drawRect(x, cy - bh / 2, x + bw, cy + bh / 2, iconPaint)
+    /** Cellular: four bars of increasing height, filled (iOS-like). */
+    private fun drawCellular(canvas: Canvas, right: Float, cy: Float) {
+        val bw = 2.6f * d
+        val gap = 2f * d
+        val heights = floatArrayOf(4f, 6.5f, 9f, 11.5f)
+        fill.color = 0xFFFFFFFF.toInt()
+        for (i in heights.indices) {
+            val x = right - (3 - i) * (bw + gap) - bw
+            val bh = heights[i] * d
+            canvas.drawRoundRect(
+                RectF(x, cy - bh / 2, x + bw, cy + bh / 2),
+                0.8f * d, 0.8f * d, fill
+            )
         }
     }
 }
